@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: white; color: #202124; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    article { max-width: 940px; margin: 0 auto; padding: 36px 32px 56px; }
+    header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 18px; margin-bottom: 16px; }
+    h1 { font-size: 25px; margin: 0; }
+    h2 { font-size: 20px; margin: 32px 0 9px; padding-bottom: 5px; border-bottom: 1px solid #cdd0d4; }
+    a { color: #30465b; text-underline-offset: 3px; }
+    nav { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; }
+    p { margin: 9px 0; }
+    .table-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 3px 0 10px; font-size: 14px; }
+    th, td { border: 1px solid #d1d4d8; padding: 6px 10px; text-align: left; vertical-align: top; }
+    th { background: #f1f2f4; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; }
+    code { overflow-wrap: anywhere; }
+    pre { background: #f5f6f7; border: 1px solid #e1e3e5; padding: 10px 14px; margin: 8px 0 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    pre code { font-size: inherit; }
+    @media (max-width: 600px) { article { padding: 18px 12px 32px; } th, td { padding: 5px; } }
+    @media print { nav { display: none; } article { max-width: none; padding: 0; } tr, pre { break-inside: avoid; } h2, p:has(strong) { break-after: avoid; } .table-wrap { overflow: visible; } }
+  </style>
+</head>
+<body>
+  <article>
+    <header>
+      <h1>${title}</h1>
+      <nav aria-label="文档下载"><a href="/api-guide.pdf" download="4S-API.pdf">PDF</a><a href="/openapi.json">OpenAPI</a><a href="/integration.zip" download="4S-接入包.zip">接入包</a></nav>
+    </header>
+    <main>${content}</main>
+  </article>
+</body>
+</html>

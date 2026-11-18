@@ -1,0 +1,820 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "4S 报警复核接口",
+    "version": "1.6.0"
+  },
+  "paths": {
+    "/api/v1/tasks": {
+      "post": {
+        "tags": [
+          "live"
+        ],
+        "summary": "接收并保存一张报警图片",
+        "operationId": "live_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Submission"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "相同报警已接收",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "相同编号内容冲突"
+          },
+          "401": {
+            "description": "令牌错误"
+          },
+          "413": {
+            "description": "请求过大"
+          },
+          "415": {
+            "description": "格式错误"
+          },
+          "422": {
+            "description": "字段、图片或 ROI 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "收件服务暂不可用"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "live"
+        ],
+        "summary": "查询审核和回调状态",
+        "operationId": "live_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "令牌错误"
+          },
+          "404": {
+            "description": "当前环境查无任务"
+          },
+          "503": {
+            "description": "服务暂不可用"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "检查服务是否就绪",
+        "operationId": "health_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "服务暂不可用"
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "review.finished": {
+      "post": {
+        "summary": "审核结束后向 4S 的固定地址投递",
+        "description": "接收方持久化后返回 2xx，按 mode 和 task_id 去重。此地址由 4S 提供。",
+        "operationId": "result_callbackreview_finished_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallbackEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CallbackEvent": {
+        "properties": {
+          "received_at": {
+            "type": "string",
+            "title": "Received At"
+          },
+          "schema_version": {
+            "type": "string",
+            "const": "1",
+            "title": "Schema Version",
+            "default": "1"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "alert_id": {
+            "type": "string",
+            "title": "Alert Id"
+          },
+          "alarm_type": {
+            "type": "string",
+            "enum": [
+              "no_helmet",
+              "no_vest",
+              "danger_zone",
+              "combined"
+            ],
+            "title": "Alarm Type"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "mode": {
+            "type": "string",
+            "const": "live",
+            "title": "Mode"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "valid",
+                  "false_alarm",
+                  "uncertain"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict",
+            "description": "必返字段。审核完成时为 valid、false_alarm 或 uncertain；未完成或技术失败时为 null。"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "rule_version": {
+            "type": "string",
+            "title": "Rule Version"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "received_at",
+          "task_id",
+          "project_id",
+          "alert_id",
+          "alarm_type",
+          "occurred_at",
+          "mode",
+          "status",
+          "verdict",
+          "reason",
+          "error",
+          "model",
+          "rule_version",
+          "finished_at"
+        ],
+        "title": "CallbackEvent"
+      },
+      "FieldIssue": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Loc"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Msg"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg"
+        ],
+        "title": "FieldIssue"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "Health"
+      },
+      "RequestError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/FieldIssue"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "RequestError"
+      },
+      "Submission": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Project Id",
+            "description": "项目编号，1–100 个字符。"
+          },
+          "alert_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Alert Id"
+          },
+          "alarm_type": {
+            "type": "string",
+            "enum": [
+              "no_helmet",
+              "no_vest",
+              "danger_zone",
+              "combined"
+            ],
+            "title": "Alarm Type"
+          },
+          "image_base64": {
+            "type": "string",
+            "maxLength": 11184812,
+            "minLength": 4,
+            "title": "Image Base64",
+            "description": "JPEG/PNG，标准 Base64，无前缀"
+          },
+          "camera_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera Id"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roi"
+          },
+          "person_boxes": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array",
+                  "maxItems": 4,
+                  "minItems": 4
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Boxes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "alert_id",
+          "alarm_type",
+          "image_base64"
+        ],
+        "title": "Submission"
+      },
+      "Task": {
+        "properties": {
+          "received_at": {
+            "type": "string",
+            "title": "Received At"
+          },
+          "schema_version": {
+            "type": "string",
+            "const": "1",
+            "title": "Schema Version",
+            "default": "1"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "alert_id": {
+            "type": "string",
+            "title": "Alert Id"
+          },
+          "alarm_type": {
+            "type": "string",
+            "enum": [
+              "no_helmet",
+              "no_vest",
+              "danger_zone",
+              "combined"
+            ],
+            "title": "Alarm Type"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "mode": {
+            "type": "string",
+            "const": "live",
+            "title": "Mode"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "awaiting_model",
+              "queued",
+              "processing",
+              "retrying",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "valid",
+                  "false_alarm",
+                  "uncertain"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict",
+            "description": "必返字段。审核完成时为 valid、false_alarm 或 uncertain；未完成或技术失败时为 null。"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "rule_version": {
+            "type": "string",
+            "title": "Rule Version"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "person_boxes": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array",
+                  "maxItems": 4,
+                  "minItems": 4
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Boxes"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roi"
+          },
+          "camera_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "elapsed_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Ms"
+          },
+          "review_attempts": {
+            "type": "integer",
+            "title": "Review Attempts"
+          },
+          "callback_attempts": {
+            "type": "integer",
+            "title": "Callback Attempts"
+          },
+          "callback_status": {
+            "type": "string",
+            "enum": [
+              "waiting_result",
+              "unconfigured",
+              "pending",
+              "sending",
+              "retrying",
+              "delivered",
+              "failed"
+            ],
+            "title": "Callback Status"
+          },
+          "callback_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Callback Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "received_at",
+          "task_id",
+          "project_id",
+          "alert_id",
+          "alarm_type",
+          "occurred_at",
+          "mode",
+          "status",
+          "verdict",
+          "reason",
+          "error",
+          "model",
+          "rule_version",
+          "finished_at",
+          "roi",
+          "camera_id",
+          "started_at",
+          "elapsed_ms",
+          "review_attempts",
+          "callback_attempts",
+          "callback_status",
+          "callback_error"
+        ],
+        "title": "Task"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

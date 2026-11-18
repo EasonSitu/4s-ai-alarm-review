@@ -1,0 +1,17 @@
+.venv
+var/
+__pycache__/
+*.pyc
+.DS_Store
+*.sqlite*
+*.db
+*.log
+*.pem
+*.key
+.env*
+*.zip
+*.pdf
+*.png
+*.jpg
+*.jpeg
+交付/

@@ -1,0 +1,19 @@
+{
+  "active_profile": "off",
+  "filter_enabled": false,
+  "model": "",
+  "model_base": "",
+  "model_key": "",
+  "model_profiles": {
+    "deepseek": {
+      "model": "deepseek-flash",
+      "model_base": "https://api.deepseek.com",
+      "model_key": ""
+    },
+    "bailian": {
+      "model": "qwen3.7-plus",
+      "model_base": "https://YOUR-WORKSPACE.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "model_key": ""
+    }
+  }
+}
