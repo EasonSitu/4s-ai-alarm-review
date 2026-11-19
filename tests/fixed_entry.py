@@ -64,10 +64,30 @@ def run(state):
         assert manage("fixed-start", "127.0.0.2", check=False).returncode != 0
         assert (state / "fixed-ip.txt").read_text().strip() == "127.0.0.1"
         manage("stop")
+        (state / "public-admin-origin.txt").write_text(base)
         manage("fixed-start")
         assert call("/healthz") == (200, {"status": "ok"})
         status, repeat = call("/api/v1/tasks", payload, settings["live_token"])
         assert status == 200 and repeat["task_id"] == task["task_id"]
+        admin_path = "/admin/api/live/tasks"
+        for path in ("/admin", admin_path, admin_path+"/"+task["task_id"]+"/image"):
+            assert call(path, token=settings["live_token"])[0] == 401
+        password = (state/"admin.secret").read_text().strip()
+        basic = "Basic "+base64.b64encode(("admin:"+password).encode()).decode()
+        auth = {"Authorization":basic}
+        with client.open(request.Request(base+admin_path+"?project=absent", headers=auth)) as response:
+            assert json.load(response)["total"] == 0
+        with client.open(request.Request(base+admin_path+"/"+task["task_id"]+"/image?index=1", headers=auth)) as response:
+            assert response.read() == base64.b64decode(photo)
+        for origin, expected in ((base,202), ("https://other.example",403)):
+            headers = {**auth, "Origin":origin, "X-Admin-Action":"1","Content-Type":"application/json"}
+            req = request.Request(base+admin_path, data=json.dumps(dict(payload, alert_id="admin-check")).encode(), headers=headers)
+            try:
+                with client.open(req) as response:
+                    code = response.status
+            except error.HTTPError as exc:
+                code = exc.code
+            assert code == expected
         manage("stop")
         manage("rotate-token", "live")
         old_token = settings["live_token"]

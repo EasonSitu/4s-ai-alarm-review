@@ -1,4 +1,4 @@
-"""Public listener: only forward canonical partner API routes to the local service."""
+"""Forward partner routes and explicitly enabled HTTPS admin routes."""
 import argparse
 import http.client
 import re
@@ -16,10 +16,14 @@ from app.main import Gate, cfg, fail
 
 READABLE = {"/healthz", "/docs", "/openapi.json", "/api-guide.md", "/api-guide.pdf", "/integration.zip", "/assets/style.css"}
 DETAIL = re.compile(r"/api/v1/tasks/[0-9a-f]{32}")
+ADMIN_TASK = r"/admin/api/live/tasks/[0-9a-f]{32}"
+ADMIN_READ = re.compile(r"/admin|/admin/api/models|/admin/api/live/tasks|" + ADMIN_TASK + r"(?:/image)?")
+ADMIN_WRITE = re.compile(r"/admin/api/live/tasks|" + ADMIN_TASK + r"/resend|/admin/api/models/(?:catalog|save|activate|routing|pause)")
 
 
 def relay(method, path, headers, data):
-    conn = http.client.HTTPConnection("127.0.0.1", cfg["port"], timeout=30)
+    timeout = 300 if path.startswith("/admin/api/models/") else 30
+    conn = http.client.HTTPConnection("127.0.0.1", cfg["port"], timeout=timeout)
     try:
         conn.request(method, path, body=data, headers=headers)
         reply = conn.getresponse()
@@ -33,17 +37,26 @@ def relay(method, path, headers, data):
 
 async def forward(scope, receive, send):
     req = Request(scope, receive)
-    headers = {k: req.headers[k] for k in ("authorization", "content-type") if k in req.headers}
+    headers = {k: req.headers[k] for k in ("authorization", "content-type", "x-admin-action") if k in req.headers}
     data = await req.body() if req.method == "POST" else None
-    response = await run_in_threadpool(relay, req.method, scope["path"], headers, data)
+    path = scope["path"]
+    if scope["query_string"]:
+        path += "?" + scope["query_string"].decode("ascii")
+    response = await run_in_threadpool(relay, req.method, path, headers, data)
     await response(scope, receive, send)
 
 
 guarded = Gate(forward)
+origin_file = STATE / "public-admin-origin.txt"
+admin_gateway = Gate(forward, public_admin_origin=origin_file.read_text(encoding="utf-8").strip() if origin_file.is_file() else "")
 
 
 async def gateway(scope, receive, send):
     path, method = scope["path"], scope["method"]
+    if (method == "GET" and ADMIN_READ.fullmatch(path)) or (method == "POST" and ADMIN_WRITE.fullmatch(path)):
+        return await admin_gateway(scope, receive, send)
+    if method == "GET" and path == "/assets/admin.js" and admin_gateway.public_admin_origin:
+        return await guarded(scope, receive, send)
     if (method == "POST" and path == "/api/v1/tasks") or (method == "GET" and (path in READABLE or DETAIL.fullmatch(path))):
         return await guarded(scope, receive, send)
     return await fail(404, "此入口仅供平台对接")(scope, receive, send)

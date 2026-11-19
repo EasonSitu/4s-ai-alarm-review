@@ -44,7 +44,7 @@ async function refresh() {
     if(id!==listRequest)return;
     maxPage=Math.max(1,Math.ceil(result.total/25));
     if(page>maxPage){page=maxPage;return refresh();}
-    notice();$('health').className='health on';$('health').textContent='本机服务在线';
+    notice();$('health').className='health on';$('health').textContent='审核服务在线';
     const modelStatus=result.model_ready?'主模型 · '+result.model_name+(result.fallback_model?'　/　备用 · '+result.fallback_model:''):'仅收图 · 等待启用模型';
     $('config').textContent=modelStatus+'　/　'+(result.callback_ready?'4S 回调已配置':'4S 回调待配置');
     if(result.failed_callbacks)notice('有 '+result.failed_callbacks+' 条回调已耗尽重试，请筛选“回调失败”处理。');

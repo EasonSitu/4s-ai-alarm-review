@@ -68,8 +68,9 @@ def fail(code, message):
 
 
 class Gate:
-    def __init__(self, app):
+    def __init__(self, app, *, public_admin_origin=None):
         self.app = app
+        self.public_admin_origin = public_admin_origin
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -78,18 +79,29 @@ class Gate:
         path = scope["path"]
         rejection = None
         if path.startswith(("/admin", "/internal")):
-            forwarded = any(k in req.headers for k in ("forwarded","x-forwarded-for","x-forwarded-host","x-real-ip","cf-connecting-ip"))
-            if forwarded or req.client is None or req.client.host not in LOCAL or req.url.hostname not in LOCAL:
-                rejection = fail(403, "内部页面仅限服务器本机访问")
-            elif path.startswith("/admin"):
+            if self.public_admin_origin is None:
+                forwarded = any(k in req.headers for k in ("forwarded","x-forwarded-for","x-forwarded-host","x-real-ip","cf-connecting-ip"))
+                if forwarded or req.client is None or req.client.host not in LOCAL or req.url.hostname not in LOCAL:
+                    rejection = fail(403, "内部页面仅限服务器本机访问")
+                allowed_origin = f"{scope['scheme']}://{req.headers.get('host')}"
+            else:
+                allowed_origin = self.public_admin_origin
+                local_tls_proxy = (req.client and req.client.host in LOCAL
+                                   and req.headers.get("x-forwarded-proto") == "https")
+                if (not allowed_origin or "https://" + req.headers.get("host", "") != allowed_origin
+                        or not (scope["scheme"] == "https" or local_tls_proxy)
+                        or len(admin_password(cfg)) < 24):
+                    rejection = fail(404, "未开放此入口")
+            if rejection is None and path.startswith("/admin"):
                 expected = base64.b64encode(("admin:"+admin_password(cfg)).encode()).decode()
                 if not eq(req.headers.get("authorization",""), "Basic "+expected):
-                    rejection = fail(401, "请使用本机后台账户 admin 登录")
-                    rejection.headers["WWW-Authenticate"] = 'Basic realm="4S local admin"'
+                    rejection = fail(401, "请使用后台账户 admin 登录")
+                    rejection.headers["WWW-Authenticate"] = 'Basic realm="4S admin"'
+                    rejection.headers["Cache-Control"] = "no-store"
             if rejection is None and req.method == "POST" and path.startswith("/admin"):
                 origin = req.headers.get("origin", "")
-                if req.headers.get("x-admin-action") != "1" or (origin and origin != f"{req.url.scheme}://{req.headers.get('host')}"):
-                    rejection = fail(403, "请从本机后台操作")
+                if req.headers.get("x-admin-action") != "1" or (origin and origin != allowed_origin):
+                    rejection = fail(403, "请从审核后台操作")
         if path.startswith("/api/v1/"):
             if not eq(req.headers.get("authorization", ""), "Bearer " + cfg["live_token"]):
                 rejection = fail(401, "环境或接口令牌不正确")
