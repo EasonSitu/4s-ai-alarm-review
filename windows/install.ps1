@@ -30,7 +30,10 @@ if ($LASTEXITCODE) { throw 'Dependency installation failed.' }
 if ($LASTEXITCODE) { throw 'Check data drive and config port (expected 8765).' }
 $identity = ([System.Security.Principal.SecurityIdentifier]'S-1-5-19').Translate([System.Security.Principal.NTAccount]).Value
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType ServiceAccount
-$trigger = New-ScheduledTaskTrigger -AtStartup
+$triggers = @(
+    New-ScheduledTaskTrigger -AtStartup
+    New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+)
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 $created = @()
 try {
@@ -38,7 +41,7 @@ try {
         $name = "4S-Review-$role"
         $argsLine = '-B -X utf8 "' + (Join-Path $root 'windows\run.py') + '" ' + $role.ToLowerInvariant()
         $action = New-ScheduledTaskAction -Execute $python -Argument $argsLine -WorkingDirectory $root
-        Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Trigger $trigger | Out-Null
+        Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Trigger $triggers | Out-Null
         $created += $name
         Start-ScheduledTask -TaskName $name
     }
