@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import store
 from .config import acquire_file_lock, CONFIG_LOCK, DISK, MAX_BODY, ROOT, STATE, admin_password, callback_ready, init_config, model_ready, save_config
-from .contracts import CallbackEvent, Delivery, Health, RequestError, Status, Submission, Task, Verdict, unpack
+from .contracts import CallbackEvent, Delivery, Health, RequestError, Status, Intake, Task, Verdict, unpack_alarm
 from .model_catalog import list_models as provider_catalog, valid_base
 from .model_profiles import MODEL_FIELDS, probe, with_profile
 from .review import RemoteError
@@ -55,7 +55,7 @@ async def lifespan(app):
                 await run_in_threadpool(t.join, 1)
 
 
-api = FastAPI(title="4S 报警复核接口", version="1.7.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+api = FastAPI(title="4S 报警复核接口", version="1.8.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -96,7 +96,7 @@ class Gate:
         if req.method == "POST" and rejection is None:
             declared = req.headers.get("content-length", "")
             if declared and (not declared.isdigit() or len(declared)>9 or int(declared)>MAX_BODY):
-                rejection = fail(413, "请求超过 12 MiB")
+                rejection = fail(413, "请求超过 56 MiB")
             elif path.endswith("/tasks") and req.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
                 rejection = fail(415, "请发送 application/json")
         if rejection is not None:
@@ -109,7 +109,7 @@ class Gate:
                     return
                 buf.extend(msg.get("body", b""))
                 if len(buf) > MAX_BODY:
-                    return await fail(413, "请求超过 12 MiB")(scope, receive, send)
+                    return await fail(413, "请求超过 56 MiB")(scope, receive, send)
                 if not msg.get("more_body"):
                     break
             original = receive
@@ -148,15 +148,15 @@ async def unavailable(req, exc):
 
 def submit(mode, s, response):
     try:
-        meta, data, mime, signature = unpack(s)
+        meta, data, mime, signature, extras = unpack_alarm(s)
         with CONFIG_LOCK:
-            task, fresh = store.add(mode, cfg, meta, data, mime, signature)
+            task, fresh = store.add(mode, cfg, meta, data, mime, signature, extras)
     except OverflowError as exc:
         raise HTTPException(413, str(exc))
     except ValueError as exc:
         raise HTTPException(422, [{"loc": ["body", "image_base64"], "msg": str(exc)}])
     except store.Conflict:
-        raise HTTPException(409, "该项目、报警和图片编号已接收，内容与原件不一致")
+        raise HTTPException(409, "该项目已接收此报警编号，图片、顺序或元数据与原件不同")
     response.status_code = 202 if fresh else 200
     return task
 
@@ -170,12 +170,12 @@ def lookup(mode, task_id):
 
 def routes(mode, prefix):
     @api.post(prefix + "/tasks", status_code=202, tags=[mode], response_model=Task, dependencies=[Depends(bearer)],
-              include_in_schema=mode=="live", operation_id=mode+"_submit", summary="接收并保存一张报警图片",
+              include_in_schema=mode=="live", operation_id=mode+"_submit", summary="接收一条报警及 1–5 张图片",
               responses={200: {"model": Task, "description":"相同报警图片已接收"}, 409: {"description":"相同编号内容冲突"},
                          401: {"description":"令牌错误"}, 413: {"description":"请求过大"}, 415: {"description":"格式错误"},
                          422: {"model": RequestError, "description": "字段、图片或 ROI 无效"},
                          503: {"description":"收件服务暂不可用"}})
-    def intake(s: Submission, response: Response):
+    def intake(s: Intake, response: Response):
         return submit(mode, s, response)
 
     @api.get(prefix + "/tasks/{task_id}", tags=[mode], response_model=Task, dependencies=[Depends(bearer)],
@@ -441,7 +441,8 @@ def admin_list(mode: Lane, project: str="", alert: str="", status: Optional[Stat
         total = c.execute("SELECT count(*) FROM tasks"+clause, args).fetchone()[0]
         rows = c.execute("SELECT * FROM tasks"+clause+" ORDER BY received_at DESC, rowid DESC LIMIT 25 OFFSET ?",
                          (*args,(page-1)*25)).fetchall()
-    return {"items":[store.view(mode, r) for r in rows], "total":total, "counts":counts,
+        items = [store.view(mode, r, c) for r in rows]
+    return {"items":items, "total":total, "counts":counts,
             "model_ready":model_ready(cfg), "model_name":cfg["model"] if model_ready(cfg) else None,
             "fallback_model":(cfg.get("fallback_config") or {}).get("model") if model_ready(cfg) else None,
             "callback_ready":callback_ready(cfg,mode), "failed_callbacks":failed_callbacks}
@@ -451,16 +452,16 @@ def admin_list(mode: Lane, project: str="", alert: str="", status: Optional[Stat
 def detail(mode: Lane, task_id: str):
     task = lookup(mode, task_id)
     with store.db(mode) as c:
-        calls = c.execute("""SELECT attempt,role,profile,requested_model,actual_model,started_at,finished_at,status,error
+        calls = c.execute("""SELECT attempt,image_index,role,profile,requested_model,actual_model,started_at,finished_at,status,error
                              FROM model_call_history WHERE task_id=?
-                             ORDER BY attempt,CASE role WHEN 'primary' THEN 0 ELSE 1 END""", (task_id,)).fetchall()
+                             ORDER BY attempt,image_index,CASE role WHEN 'primary' THEN 0 ELSE 1 END""", (task_id,)).fetchall()
     return dict(task, model_calls=[dict(call) for call in calls])
 
 
 @api.get("/admin/api/{mode}/tasks/{task_id}/image", include_in_schema=False)
-def original(mode: Lane, task_id: str):
+def original(mode: Lane, task_id: str, index: int=Query(default=1,ge=1,le=5)):
     with store.db(mode) as c:
-        image = c.execute("SELECT mime,data FROM images WHERE task_id=?", (task_id,)).fetchone()
+        image = store.original(c, task_id, index)
     if image is None:
         raise HTTPException(404)
     return Response(image["data"], media_type=image["mime"])
@@ -480,7 +481,7 @@ def resend(mode: Lane, task_id: str):
 
 
 @api.post("/admin/api/{mode}/tasks", include_in_schema=False)
-def admin_upload(mode: Lane, s: Submission, response: Response):
+def admin_upload(mode: Lane, s: Intake, response: Response):
     return submit(mode, s, response)
 
 

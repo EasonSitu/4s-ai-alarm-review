@@ -223,7 +223,7 @@ class Pilot:
         for answer,verdict in (("empty","uncertain"),("card","uncertain"),("false_alarm","false_alarm")):
             p.model_response=answer
             result=self.wait(self.submit("evidence-"+answer),"callback_status","delivered")
-            assert (result["verdict"],result["rule_version"])==(verdict,"ppe-2")
+            assert (result["verdict"],result["rule_version"])==(verdict,"ppe-3")
         assert self.api("/admin",Authorization="")[0]==401
         assert self.api("/admin",**{"X-Forwarded-For":"192.0.2.1"})[0]==403
         with sqlite3.connect(self.state/"live/tasks.sqlite3") as c:

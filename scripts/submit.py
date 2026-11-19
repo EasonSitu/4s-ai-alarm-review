@@ -43,24 +43,28 @@ def read_token():
 
 
 def main():
-    p = argparse.ArgumentParser(description="提交一张报警图片")
-    p.add_argument("image", type=Path)
+    p = argparse.ArgumentParser(description="一次提交一条报警的 1–5 张图片")
+    p.add_argument("image", type=Path, nargs="+")
     p.add_argument("--base", required=True, help="含 /api/v1 的接口地址")
     p.add_argument("--project", required=True, help="4S 提供的项目编号")
     p.add_argument("--alert", required=True)
-    p.add_argument("--image-id", help="同一报警内的图片编号，重传时保持一致")
+    p.add_argument("--image-id", help="仅供重传旧版单图请求")
     p.add_argument("--type", default="no_helmet", choices=["no_helmet","no_vest","danger_zone","combined"])
     p.add_argument("--wait", action="store_true", help="最多等待 90 秒，输出审核结果和当前回调状态")
     args = p.parse_args()
     token = read_token()
     if not token:
         p.error("请先设置环境变量 FOUR_S_TOKEN")
-    if not args.image.is_file() or args.image.stat().st_size > 8 * 1024 * 1024:
-        p.error("请选择 8 MiB 以内的图片文件")
-    payload = dict(project_id=args.project, alert_id=args.alert, alarm_type=args.type,
-                   image_base64=base64.b64encode(args.image.read_bytes()).decode())
+    if not 1 <= len(args.image) <= 5 or any(not p.is_file() or p.stat().st_size > 8*1024*1024 for p in args.image):
+        p.error("请选择 1–5 张图片，每张最多 8 MiB")
+    if args.image_id and len(args.image) != 1:
+        p.error("--image-id 仅适用于旧版单图")
+    images = [{"image_base64": base64.b64encode(path.read_bytes()).decode()} for path in args.image]
+    payload = dict(project_id=args.project, alert_id=args.alert, alarm_type=args.type)
     if args.image_id is not None:
-        payload["image_id"] = args.image_id
+        payload.update(images[0], image_id=args.image_id)
+    else:
+        payload["images"] = images
     try:
         client = api_client(args.base)
         url = args.base.rstrip("/") + "/tasks"

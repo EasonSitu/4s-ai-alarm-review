@@ -18,7 +18,7 @@ Verdict = Literal["valid", "false_alarm", "uncertain"]
 Status = Literal["awaiting_model", "queued", "processing", "retrying", "completed", "failed"]
 Delivery = Literal["waiting_result", "unconfigured", "pending", "sending", "retrying", "delivered", "failed"]
 PPE = ("no_helmet", "no_vest")
-RULE = "ppe-2"
+RULE = "ppe-3"
 REVIEW_DELAYS = (5, 30)
 CALLBACK_DELAYS = (5, 30, 120, 600)
 def local_review_model(mode, project_id, alarm_type):
@@ -54,20 +54,15 @@ def ordered_box(value):
 
 
 Box = Annotated[list[float], Field(min_length=4, max_length=4), BeforeValidator(numeric_box), AfterValidator(ordered_box)]
-class Submission(BaseModel):
+class AlarmFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str = Field(min_length=1, max_length=100, description="项目编号，1–100 个字符。")
     alert_id: str = Field(min_length=1, max_length=100)
-    image_id: Optional[str] = Field(default=None, min_length=1, max_length=100,
-                                    description="图片编号。同一报警多图时逐张提交，给每张图片一个稳定编号。")
     alarm_type: Alarm
-    image_base64: str = Field(min_length=4, max_length=4 * ((MAX_IMAGE + 2) // 3), description="JPEG/PNG，标准 Base64，无前缀")
     camera_id: Optional[str] = Field(default=None, max_length=100)
     occurred_at: Optional[AwareDatetime] = None
-    roi: Optional[Box] = None
-    person_boxes: Optional[list[Box]] = None
 
-    @field_validator("project_id", "alert_id", "image_id", "camera_id")
+    @field_validator("project_id", "alert_id", "camera_id")
     @classmethod
     def clean_id(cls, value):
         if value is not None and (not value.strip() or value.strip() != value or not value.isprintable()):
@@ -80,6 +75,38 @@ class Submission(BaseModel):
         if value is not None and (not isinstance(value, str) or "T" not in value.upper()):
             raise ValueError("请使用带时区的 ISO 8601 时间字符串")
         return value
+
+
+class FrameInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    image_base64: str = Field(min_length=4, max_length=4 * ((MAX_IMAGE + 2) // 3), description="JPEG/PNG，标准 Base64，无前缀")
+    roi: Optional[Box] = None
+    person_boxes: Optional[list[Box]] = None
+
+
+class Submission(AlarmFields, FrameInput):
+    image_id: Optional[str] = Field(default=None, min_length=1, max_length=100,
+                                    description="旧版单图请求的图片编号。")
+
+    _clean_image_id = field_validator("image_id")(AlarmFields.clean_id)
+
+
+class AlarmSubmission(AlarmFields):
+    images: list[FrameInput] = Field(min_length=1, max_length=5)
+
+
+Intake = Union[AlarmSubmission, Submission]
+
+
+class FrameResult(BaseModel):
+    index: int
+    status: Literal["pending", "retrying", "completed", "failed"]
+    verdict: Optional[Verdict]
+    reason: Optional[str]
+    error: Optional[str]
+    model: Optional[str]
+    roi: Optional[Box]
+    person_boxes: Optional[list[Box]]
 
 
 class Event(BaseModel):
@@ -99,6 +126,7 @@ class Event(BaseModel):
     model: Optional[str]
     rule_version: str
     finished_at: Optional[str]
+    images: list[FrameResult]
 
 
 class CallbackEvent(Event):
@@ -143,3 +171,19 @@ def unpack(s):
         del meta["person_boxes"]  # Preserve signatures of submissions made before boxes were supported.
     signature = hashlib.sha256(json.dumps(meta, sort_keys=True).encode() + hashlib.sha256(data).digest()).hexdigest()
     return meta, data, "image/" + fmt.lower(), signature
+
+
+def unpack_alarm(submission):
+    if isinstance(submission, Submission):
+        return (*unpack(submission), [])
+    common = submission.model_dump(exclude={"images"}, mode="json")
+    frames = []
+    for index, frame in enumerate(submission.images, 1):
+        try:
+            frames.append(unpack(Submission(**common, **frame.model_dump())))
+        except ValueError as exc:
+            raise ValueError(f"第 {index} 张图片：{exc}") from exc
+    meta, data, mime, signature = frames[0]
+    if len(frames) > 1:
+        signature = hashlib.sha256(json.dumps([f[3] for f in frames]).encode()).hexdigest()
+    return meta, data, mime, signature, frames[1:]

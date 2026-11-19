@@ -92,16 +92,39 @@ def init(mode, cfg):
             task_id TEXT NOT NULL REFERENCES tasks, attempt INTEGER NOT NULL, profile TEXT, endpoint_origin TEXT,
             requested_model TEXT, rule_version TEXT, started_at TEXT, finished_at TEXT, status TEXT, actual_model TEXT,
             PRIMARY KEY(task_id,attempt))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS task_frames(
+            task_id TEXT NOT NULL REFERENCES tasks, idx INTEGER NOT NULL, mime TEXT, data BLOB,
+            roi TEXT, person_boxes TEXT, status TEXT NOT NULL, verdict TEXT, reason TEXT, error TEXT, model TEXT,
+            PRIMARY KEY(task_id,idx))""")
+        # Old originals stay in the images table. Migrate only their metadata.
+        c.execute("""INSERT INTO task_frames(task_id,idx,roi,person_boxes,status,verdict,reason,error,model)
+                     SELECT task_id,1,roi,person_boxes,
+                     CASE WHEN status IN ('completed','failed') THEN status ELSE 'pending' END,
+                     verdict,reason,error,model FROM tasks t WHERE NOT EXISTS
+                     (SELECT 1 FROM task_frames f WHERE f.task_id=t.task_id)""")
+        history_cols = {r[1] for r in c.execute("PRAGMA table_info(model_call_history)")}
+        if history_cols and "image_index" not in history_cols:
+            c.execute("ALTER TABLE model_call_history RENAME TO old_model_calls")
         c.execute("""CREATE TABLE IF NOT EXISTS model_call_history(
             task_id TEXT NOT NULL REFERENCES tasks, attempt INTEGER NOT NULL, role TEXT NOT NULL,
             profile TEXT, endpoint_origin TEXT, requested_model TEXT, actual_model TEXT,
-            started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, error TEXT,
-            PRIMARY KEY(task_id,attempt,role))""")
+            started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, error TEXT, image_index INTEGER NOT NULL,
+            PRIMARY KEY(task_id,attempt,image_index,role))""")
+        if history_cols and "image_index" not in history_cols:
+            c.execute("INSERT INTO model_call_history SELECT *,1 FROM old_model_calls")
+            c.execute("DROP TABLE old_model_calls")
         c.execute("UPDATE review_history SET status='interrupted',finished_at=? WHERE status='processing'", (now(),))
         c.execute("UPDATE model_call_history SET status='interrupted',finished_at=? WHERE status='processing'", (now(),))
         callback = "pending" if callback_ready(cfg, mode) else "unconfigured"
-        c.execute("""UPDATE tasks SET status='failed', error='最后一次审核中断', finished_at=?, callback_status=?
-                   WHERE historical_test=0 AND status='processing' AND review_attempts>=?""", (now(),callback,len(REVIEW_DELAYS)+1))
+        interrupted = c.execute("""SELECT task_id FROM tasks WHERE historical_test=0 AND status='processing'
+                                   AND review_attempts>=?""", (len(REVIEW_DELAYS)+1,)).fetchall()
+        for row in interrupted:
+            task_id = row["task_id"]
+            c.execute("""UPDATE task_frames SET status='failed',error=COALESCE(error,'最后一次审核中断')
+                         WHERE task_id=? AND status!='completed'""", (task_id,))
+            status, verdict, reason, error, model = aggregate(frame_results(c, task_id))
+            c.execute("""UPDATE tasks SET status=?,verdict=?,reason=?,error=?,model=?,finished_at=?,callback_status=?
+                         WHERE task_id=?""", (status, verdict, reason, error, model, now(), callback, task_id))
         c.execute("""UPDATE tasks SET callback_status='failed', callback_error='最后一次发送中断，未收到确认'
                    WHERE historical_test=0 AND callback_status='sending' AND callback_attempts>=?""", (len(CALLBACK_DELAYS)+1,))
         c.execute("UPDATE tasks SET status='queued' WHERE historical_test=0 AND status='processing'")
@@ -129,14 +152,17 @@ class Conflict(Exception):
     pass
 
 
-def add(mode, cfg, meta, data, mime, signature):
+def add(mode, cfg, meta, data, mime, signature, extra_frames=()):
     with db(mode) as c:
         c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT * FROM tasks WHERE project_id=? AND alert_id=? AND image_id=?", (meta["project_id"], meta["alert_id"], meta.get("image_id") or "")).fetchone()
         if row:
             if row["signature"] != signature:
                 raise Conflict
-            return view(mode, row), False
+            return view(mode, row, c), False
+        if c.execute("SELECT 1 FROM tasks WHERE project_id=? AND alert_id=?",
+                     (meta["project_id"], meta["alert_id"])).fetchone():
+            raise Conflict
         task_id = uuid.uuid4().hex
         model = local_review_model(mode, meta["project_id"], meta["alarm_type"])
         external = model is None
@@ -144,20 +170,53 @@ def add(mode, cfg, meta, data, mime, signature):
         c.execute("""INSERT INTO tasks(task_id,project_id,alert_id,alarm_type,occurred_at,camera_id,roi,
                    signature,received_at,status,rule_version,person_boxes,image_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (task_id, meta["project_id"], meta["alert_id"], meta["alarm_type"], meta["occurred_at"],
-                   meta["camera_id"], json.dumps(meta["roi"]), signature, now(), "awaiting_model" if waiting else "queued", RULE, json.dumps(meta.get("person_boxes")), meta.get("image_id") or ""))
-        c.execute("INSERT INTO images VALUES(?,?,?)", (task_id, mime, data))
-        return view(mode, c.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()), True
+                   meta["camera_id"], json.dumps(None if extra_frames else meta["roi"]), signature, now(), "awaiting_model" if waiting else "queued", RULE, json.dumps(None if extra_frames else meta.get("person_boxes")), meta.get("image_id") or ""))
+        for index, (frame, raw, kind, _) in enumerate([(meta, data, mime, signature), *extra_frames], 1):
+            c.execute("""INSERT INTO task_frames(task_id,idx,roi,person_boxes,mime,data,status)
+                         VALUES(?,?,?,?,?,?,'pending')""",
+                      (task_id,index,json.dumps(frame["roi"]),json.dumps(frame.get("person_boxes")),kind,raw))
+        return view(mode, c.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone(), c), True
 
 
-def view(mode, row):
+def frame_results(c, task_id):
+    rows = c.execute("""SELECT idx AS 'index',status,verdict,reason,error,model,roi,person_boxes FROM task_frames
+                        WHERE task_id=? ORDER BY idx""", (task_id,))
+    return [dict(dict(r), roi=json.loads(r["roi"] or "null"), person_boxes=json.loads(r["person_boxes"] or "null")) for r in rows]
+
+
+def original(c, task_id, index):
+    return c.execute("""SELECT COALESCE(f.mime,i.mime) AS mime, COALESCE(f.data,i.data) AS data
+                        FROM task_frames f LEFT JOIN images i ON i.task_id=f.task_id AND f.idx=1
+                        WHERE f.task_id=? AND f.idx=?""", (task_id,index)).fetchone()
+
+
+def aggregate(frames):
+    """Called only after every frame has a verdict or terminal error."""
+    models = list(dict.fromkeys(f["model"] for f in frames if f["model"]))
+    model = ", ".join(models) or None
+    valid = next((f for f in frames if f["verdict"] == "valid"), None)
+    if valid:
+        reason = valid["reason"] if len(frames)==1 else f"第 {valid['index']} 张：{valid['reason']}"
+        return "completed", "valid", reason, None, model
+    if all(f["verdict"] == "false_alarm" for f in frames):
+        reason = frames[0]["reason"] if len(frames)==1 else f"全部 {len(frames)} 张图片均可排除本条违规。"
+        return "completed", "false_alarm", reason, None, model
+    if all(f["status"] == "failed" for f in frames):
+        return "failed", None, None, frames[0]["error"] if len(frames)==1 else "全部图片审核失败，详见逐图错误。", model
+    reason = frames[0]["reason"] if len(frames)==1 else "未见明确违规，部分图片证据不足或审核失败。"
+    return "completed", "uncertain", reason, None, model
+
+
+def view(mode, row, c):
     data = dict(row)
     data["image_id"] = data["image_id"] or None
     data["person_boxes"] = json.loads(data["person_boxes"]) if data["person_boxes"] else None
-    data.update(mode=mode, roi=json.loads(data["roi"]))
+    data.update(mode=mode, roi=json.loads(data["roi"]), images=frame_results(c, row["task_id"]))
     return Task.model_validate(data).model_dump()
 
 
 def get(mode, task_id):
     with db(mode) as c:
+        c.execute("BEGIN")
         row = c.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        return view(mode, row) if row else None
+        return view(mode, row, c) if row else None

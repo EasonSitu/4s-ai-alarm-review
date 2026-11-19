@@ -2,7 +2,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
-| 1.1 | 2026-11 | 支持同一报警逐张推送多张图片 |
+| 1.2 | 2026-11 | 一条报警一次提交 1–5 张图，返回一个任务号和一个总结果 |
 
 ## 1 通用约定
 
@@ -17,121 +17,88 @@
 
 调用流程：
 
-1. 每次提交一张图片，保存后立即返回一个 `task_id`。同一报警的多张图片共用 `alert_id`，每张使用不同的 `image_id`。
-2. 服务在后台复核。
-3. 复核结束后，服务把结果回调给 4S。4S 也可以随时用 `task_id` 查询。
+1. 将一条报警的 1–5 张图片一次提交。全部保存后返回一个 `task_id`。
+2. 服务逐张复核并汇总。4S 通过回调或查询取得报警级 `status` 和 `verdict`。
+3. 4S 自行决定报警的展示、通知和过滤。
 
-复核结果只说明图片中是否看得到对应违规。是否展示、通知或隐藏报警，由 4S 自行决定。
-
-## 2 提交报警图片
+## 2 提交报警
 
 `POST /api/v1/tasks`
-
-### 请求参数
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `project_id` | string | 是 | 项目编号，1–100 个字符 |
 | `alert_id` | string | 是 | 报警编号，1–100 个字符，项目内唯一 |
-| `image_id` | string | 多图时必填 | 图片编号，1–100 个字符，同一报警内唯一。单图可省略 |
 | `alarm_type` | string | 是 | 报警类型，取值见第 6 节 |
-| `image_base64` | string | 是 | 报警图片，单张 JPEG 或 PNG 的标准 Base64，不带前缀，不换行。原图不超过 8 MiB、1600 万像素 |
+| `images` | array | 是 | 1–5 张，按原顺序提交 |
 | `camera_id` | string | 否 | 摄像头编号，最多 100 个字符 |
-| `occurred_at` | string | 否 | 报警发生时间，带时区 |
-| `roi` | number[] | 否 | 复核区域 `[左, 上, 右, 下]`，取值为 0–1 的比例，左小于右、上小于下。省略时复核整图 |
-| `person_boxes` | number[][] | 否 | 原算法识别出的人员框，每个框的格式同 `roi`。可省略 |
+| `occurred_at` | string | 否 | 带时区的报警发生时间 |
 
-每个请求不超过 12 MiB。例：报警 A 有三张图，分别提交 A/01、A/02、A/03，得到三个任务号和三份独立结论。
+每个 images 元素的字段如下。每张原图限 8 MiB、1600 万像素，整个 JSON 请求限 56 MiB。
 
-### 请求示例
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `image_base64` | string | 是 | JPEG 或 PNG 的标准 Base64，不带前缀、不换行 |
+| `roi` | number[] | 否 | 本图复核区域 [左, 上, 右, 下]，归一化至 0–1。省略时审核整图 |
+| `person_boxes` | number[][] | 否 | 本图候选人员框，坐标相对本图，格式同 roi，仅供定位 |
 
 ```json
 {
-  "project_id": "site-01",
-  "alert_id": "A-20261118-0001",
-  "image_id": "01",
-  "alarm_type": "no_helmet",
-  "image_base64": "<图片的 Base64>",
-  "camera_id": "cam-08",
-  "occurred_at": "2026-11-18T09:00:00+08:00"
+  "project_id": "site-01", "alert_id": "A-0001", "alarm_type": "no_helmet",
+  "images": [
+    { "image_base64": "<第一张>", "roi": [0.1, 0, 0.9, 1] },
+    { "image_base64": "<第二张>" }
+  ]
 }
 ```
-
-### 响应
 
 | HTTP | 含义 |
 |---|---|
-| 202 | 首次提交，图片已保存，返回任务对象 |
-| 200 | 同一项目、报警和图片编号已提交过且内容一致，返回原任务对象 |
-| 409 | 同一项目、报警和图片编号已提交过，但内容有变化 |
+| 202 | 全部原图与任务已保存，返回一个任务对象 |
+| 200 | 原样重传，返回原任务号 |
+| 409 | 同项目同报警编号已存在，图片、顺序或字段有变化 |
 
-任务对象的字段见第 3 节。响应示例（节选）：
-
-```json
-{
-  "task_id": "0123456789abcdef0123456789abcdef",
-  "status": "queued",
-  "verdict": null
-}
-```
-
-### 重传
-
-遇到超时、断线、429 或 5xx 时，请原样重传并保留原图片编号。首次省略图片编号时，重传也须省略。
+重传时保持请求内容及图片顺序一致。一张无效则整单拒收。旧版单图请求仍可提交或原样重传，历史任务仍可按原任务号查询。
 
 ## 3 查询复核结果
 
-`GET /api/v1/tasks/{task_id}`
-
-| 路径参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `task_id` | string | 是 | 提交接口返回的任务号 |
-
-### 响应字段
-
-HTTP 200，返回任务对象。
+`GET /api/v1/tasks/{task_id}`。成功返回 HTTP 200。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `task_id` | string | 任务号 |
-| `project_id` | string | 项目编号 |
-| `alert_id` | string | 报警编号 |
-| `image_id` | string / null | 图片编号，提交时省略则为 `null` |
+| `task_id` | string | 提交时返回的任务号 |
+| `project_id`、`alert_id` | string | 项目编号、报警编号 |
 | `alarm_type` | string | 报警类型 |
-| `status` | string | 处理状态，取值见第 6 节 |
-| `verdict` | string / null | 复核结论，取值见第 6 节。处理结束前，或技术失败时为 `null` |
-| `reason` | string / null | 结论说明 |
-| `error` | string / null | 技术失败说明 |
-| `occurred_at` | string / null | 报警发生时间 |
-| `received_at` | string | 服务收到报警的时间 |
-| `finished_at` | string / null | 复核结束时间 |
-| `schema_version` | string | 结构版本，当前为 `"1"` |
+| `status` | string | 整条报警的处理状态，见第 6 节 |
+| `verdict` | string / null | 整条报警的结论，处理中或全部技术失败时为 null |
+| `reason`、`error` | string / null | 判断理由、技术失败说明 |
+| `images` | array | 按提交顺序返回逐图明细。index 从 1 开始；含 status、verdict、reason、error、model、roi 和 person_boxes |
+| `received_at`、`finished_at` | string / null | 收件时间、处理完成时间 |
 
-响应中的其他字段供排查问题使用，可以忽略。
-
-### 响应示例
+完成响应节选：
 
 ```json
 {
   "task_id": "0123456789abcdef0123456789abcdef",
-  "project_id": "site-01",
-  "alert_id": "A-20261118-0001",
-  "image_id": "01",
-  "alarm_type": "no_helmet",
-  "status": "completed",
-  "verdict": "valid",
-  "reason": "区域内一人头部清晰，未佩戴安全帽。",
-  "error": null,
-  "occurred_at": "2026-11-18T01:00:00Z",
-  "received_at": "2026-11-18T01:00:02Z",
-  "finished_at": "2026-11-18T01:00:06Z",
-  "schema_version": "1"
+  "alert_id": "A-0001", "status": "completed", "verdict": "valid",
+  "reason": "第 2 张：区域内一人未戴安全帽。",
+  "images": [
+    { "index": 1, "status": "completed", "verdict": "uncertain" },
+    { "index": 2, "status": "completed", "verdict": "valid" }
+  ]
 }
 ```
 
+| 图片结果（按优先级） | 报警结果 |
+|---|---|
+| 任意一张有效 | completed / valid |
+| 全部明确误报 | completed / false_alarm |
+| 全部技术失败 | failed / null |
+| 其余组合，包括部分失败或证据不足 | completed / uncertain |
+
 ## 4 结果回调
 
-复核结束时（`status` 为 `completed` 或 `failed`），每张图片分别向 4S 提供的地址发送 POST，包含原报警编号、图片编号和任务号。
+复核结束时（`status` 为 `completed` 或 `failed`），每条报警产生一个结果回调，携带任务号、报警总结果和逐图明细。
 
 | 项目 | 约定 |
 |---|---|
@@ -192,7 +159,7 @@ HTTP 200，返回任务对象。
 |---|---|---|
 | 401 | 令牌缺失或无效 | 检查 `Authorization` 请求头 |
 | 404 | 接口或任务不存在 | 核对路径和 `task_id` |
-| 409 | 同一报警内的图片编号内容冲突 | 核对首次提交的图片和字段 |
+| 409 | 同一报警编号内容冲突 | 核对首次提交的图片和字段 |
 | 413 | 请求超出大小限制 | 检查图片和请求体大小 |
 | 415 | 请求格式错误 | 设置 `Content-Type: application/json` |
 | 422 | 字段、图片或区域无效 | 按 `detail` 修正，`detail` 为列表，每项含 `loc` 和 `msg` |
@@ -201,6 +168,6 @@ HTTP 200，返回任务对象。
 ## 8 处理时间
 
 - 单张图片的复核通常在数秒内完成。
-- 复核失败会自动重试，最多 3 轮。若启用了备用模型，每轮可能依次尝试主模型和备用模型；主模型超时由后台设置，备用模型单次超时 60 秒。全部失败时返回 `failed`，结论为 `null`。处理时间还取决于排队和重试等待。
+- 逐张处理，仅对技术失败的图片重试，最多 3 轮。若启用了备用模型，每轮可能依次尝试主模型和备用模型；主模型超时由后台设置，备用模型单次超时 60 秒。全部失败时返回 `failed`，结论为 `null`。处理时间还取决于排队和重试等待。
 - 建议 4S 为每条报警设定自己的等待上限，超时后按自身规则处理。
 

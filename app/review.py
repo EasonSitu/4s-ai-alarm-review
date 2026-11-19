@@ -145,6 +145,18 @@ def review(mode, cfg, task, mime, image, timeout=60):
         "仅输出 JSON 对象，字段 relevant_person_visible、is_site_image、saw_target_violation 和 can_rule_out_every_target_violation 为布尔值，"
         "reason 为具体简短的中文可见证据。不推测身份，不编造细节。"
     )
+    if task.get("person_boxes"):
+        left, top, right, bottom = task["roi"] or (0, 0, 1, 1)
+        hints = []
+        for x0, y0, x1, y1 in task["person_boxes"]:
+            x0, y0, x1, y1 = max(x0,left), max(y0,top), min(x1,right), min(y1,bottom)
+            if x0 < x1 and y0 < y1:
+                hints.append([round((x0-left)/(right-left),4), round((y0-top)/(bottom-top),4),
+                              round((x1-left)/(right-left),4), round((y1-top)/(bottom-top),4)])
+            if len(hints) == 100:
+                break
+        if hints:
+            prompt += " 当前审核图上的候选人员框（归一化左上右下，仅供定位，仍须检查全图）：" + json.dumps(hints)
     content, actual = image_completion(cfg, mime, data, prompt, timeout=timeout)
     verdict, reason = interpret(content)
     return verdict, reason, actual

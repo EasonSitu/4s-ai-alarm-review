@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from .config import CONFIG_LOCK, callback_ready
 from .contracts import CALLBACK_DELAYS, REVIEW_DELAYS, RULE, CallbackEvent, local_review_model
 from .review import RemoteError, post_json, review
-from .store import db, now, view
+from .store import aggregate, db, frame_results, now, original, view
 
 log = logging.getLogger("uvicorn.error")
 
@@ -26,7 +26,7 @@ def claim(mode, delivery, cfg):
         c.execute(f"UPDATE tasks SET {column}=?, {attempts}={attempts}+1 {extra} WHERE task_id=?", (*args, row[0]))
         if not delivery:
             c.execute("UPDATE tasks SET rule_version=? WHERE task_id=?", (RULE,row[0]))
-        task = view(mode, c.execute("SELECT * FROM tasks WHERE task_id=?", (row[0],)).fetchone())
+        task = view(mode, c.execute("SELECT * FROM tasks WHERE task_id=?", (row[0],)).fetchone(), c)
         if not delivery:
             local_model = local_review_model(mode, task["project_id"], task["alarm_type"])
             external = local_model is None
@@ -43,56 +43,70 @@ def diagnostic(exc):
 
 
 def call_model(mode, cfg, t, image, role, profile, timeout):
+    index = t["frame_index"]
     remote = urlsplit(cfg["model_base"])
     with db(mode) as c:
         c.execute("""INSERT INTO model_call_history
-                     (task_id,attempt,role,profile,endpoint_origin,requested_model,started_at,status)
-                     VALUES(?,?,?,?,?,?,?,'processing')""",
-                  (t["task_id"],t["review_attempts"],role,profile,
+                     (task_id,attempt,image_index,role,profile,endpoint_origin,requested_model,started_at,status)
+                     VALUES(?,?,?,?,?,?,?,?,'processing')""",
+                  (t["task_id"],t["review_attempts"],index,role,profile,
                    f"{remote.scheme}://{remote.netloc}",cfg["model"],now()))
     try:
         result = review(mode, cfg, t, *image, timeout=timeout)
     except Exception as exc:
         with db(mode) as c:
             c.execute("""UPDATE model_call_history SET status='failed',error=?,finished_at=?
-                         WHERE task_id=? AND attempt=? AND role=?""",
-                      (diagnostic(exc),now(),t["task_id"],t["review_attempts"],role))
+                         WHERE task_id=? AND attempt=? AND role=? AND image_index=?""",
+                      (diagnostic(exc),now(),t["task_id"],t["review_attempts"],role,index))
         raise
     with db(mode) as c:
         c.execute("""UPDATE model_call_history SET status='completed',actual_model=?,finished_at=?
-                     WHERE task_id=? AND attempt=? AND role=?""",
-                  (result[2],now(),t["task_id"],t["review_attempts"],role))
+                     WHERE task_id=? AND attempt=? AND role=? AND image_index=?""",
+                  (result[2],now(),t["task_id"],t["review_attempts"],role,index))
     return result
+
+
+def review_frame(mode, cfg, task, frame):
+    index = frame["index"]
+    with db(mode) as c:
+        image = original(c, task["task_id"], index)
+    inputs = dict(task, frame_index=index, roi=frame["roi"], person_boxes=frame["person_boxes"])
+    if local_review_model(mode, task["project_id"], task["alarm_type"]):
+        return review(mode, cfg, inputs, *image)
+    try:
+        return call_model(mode, cfg, inputs, image, "primary", cfg.get("active_profile") or "legacy",
+                          cfg.get("primary_timeout_seconds") or 60)
+    except RemoteError:
+        if not cfg.get("fallback_config"):
+            raise
+        return call_model(mode, dict(cfg, **cfg["fallback_config"]), inputs, image, "fallback",
+                          cfg.get("fallback_profile"), 60)
 
 
 def run_review(mode, cfg, t, delays=REVIEW_DELAYS):
     start = time.monotonic()
     attempt = t["review_attempts"]
-    verdict = reason = error = None
-    model = local_review_model(mode, t["project_id"], t["alarm_type"]) or cfg["model"]
-    try:
-        if attempt > len(delays) + 1:
-            raise RemoteError("中断后已耗尽审核次数")
+    for frame in t["images"]:
+        if frame["status"] in ("completed", "failed"):
+            continue
+        verdict = reason = model = error = None
+        try:
+            verdict, reason, model = review_frame(mode, cfg, t, frame)
+            state = "completed"
+        except Exception as exc:
+            error = diagnostic(exc)
+            state = "retrying" if attempt <= len(delays) else "failed"
         with db(mode) as c:
-            image = c.execute("SELECT mime,data FROM images WHERE task_id=?", (t["task_id"],)).fetchone()
-        if local_review_model(mode, t["project_id"], t["alarm_type"]):
-            verdict, reason, model = review(mode, cfg, t, *image)
-        else:
-            try:
-                verdict, reason, model = call_model(mode, cfg, t, image, "primary",
-                                                   cfg.get("active_profile") or "legacy",
-                                                   cfg.get("primary_timeout_seconds") or 60)
-            except RemoteError:
-                backup = cfg.get("fallback_config")
-                if not backup:
-                    raise
-                fallback = dict(cfg, **backup)
-                verdict, reason, model = call_model(mode, fallback, t, image, "fallback",
-                                                   cfg.get("fallback_profile"), 60)
-        status = "completed"
-    except Exception as exc:
-        error = diagnostic(exc)
-        status = "retrying" if attempt <= len(delays) else "failed"
+            c.execute("""UPDATE task_frames SET status=?,verdict=?,reason=?,model=?,error=?
+                         WHERE task_id=? AND idx=?""",
+                      (state, verdict, reason, model, error, t["task_id"], frame["index"]))
+    with db(mode) as c:
+        frames = frame_results(c, t["task_id"])
+    retry = next((f for f in frames if f["status"] == "retrying"), None)
+    if retry:
+        status, verdict, reason, error, model = "retrying", None, None, retry["error"], None
+    else:
+        status, verdict, reason, error, model = aggregate(frames)
     elapsed = round((time.monotonic()-start)*1000)
     finished = status != "retrying"
     callback = "pending" if callback_ready(cfg, mode) else "unconfigured"

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "4S 报警复核接口",
-    "version": "1.7.0"
+    "version": "1.8.0"
   },
   "paths": {
     "/api/v1/tasks": {
@@ -10,13 +10,21 @@
         "tags": [
           "live"
         ],
-        "summary": "接收并保存一张报警图片",
+        "summary": "接收一条报警及 1–5 张图片",
         "operationId": "live_submit",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Submission"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AlarmSubmission"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Submission"
+                  }
+                ],
+                "title": "S"
               }
             }
           },
@@ -200,6 +208,75 @@
   },
   "components": {
     "schemas": {
+      "AlarmSubmission": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Project Id",
+            "description": "项目编号，1–100 个字符。"
+          },
+          "alert_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Alert Id"
+          },
+          "alarm_type": {
+            "type": "string",
+            "enum": [
+              "no_helmet",
+              "no_vest",
+              "danger_zone",
+              "combined"
+            ],
+            "title": "Alarm Type"
+          },
+          "camera_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera Id"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/FrameInput"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "minItems": 1,
+            "title": "Images"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "alert_id",
+          "alarm_type",
+          "images"
+        ],
+        "title": "AlarmSubmission"
+      },
       "CallbackEvent": {
         "properties": {
           "received_at": {
@@ -333,6 +410,13 @@
               }
             ],
             "title": "Finished At"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/FrameResult"
+            },
+            "type": "array",
+            "title": "Images"
           }
         },
         "type": "object",
@@ -350,7 +434,8 @@
           "error",
           "model",
           "rule_version",
-          "finished_at"
+          "finished_at",
+          "images"
         ],
         "title": "CallbackEvent"
       },
@@ -381,6 +466,172 @@
           "msg"
         ],
         "title": "FieldIssue"
+      },
+      "FrameInput": {
+        "properties": {
+          "image_base64": {
+            "type": "string",
+            "maxLength": 11184812,
+            "minLength": 4,
+            "title": "Image Base64",
+            "description": "JPEG/PNG，标准 Base64，无前缀"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roi"
+          },
+          "person_boxes": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array",
+                  "maxItems": 4,
+                  "minItems": 4
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Boxes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "image_base64"
+        ],
+        "title": "FrameInput"
+      },
+      "FrameResult": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "retrying",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "valid",
+                  "false_alarm",
+                  "uncertain"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roi"
+          },
+          "person_boxes": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array",
+                  "maxItems": 4,
+                  "minItems": 4
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Boxes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "status",
+          "verdict",
+          "reason",
+          "error",
+          "model",
+          "roi",
+          "person_boxes"
+        ],
+        "title": "FrameResult"
       },
       "HTTPValidationError": {
         "properties": {
@@ -427,73 +678,12 @@
       },
       "Submission": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Project Id",
-            "description": "项目编号，1–100 个字符。"
-          },
-          "alert_id": {
-            "type": "string",
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Alert Id"
-          },
-          "image_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 100,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Image Id",
-            "description": "图片编号。同一报警多图时逐张提交，给每张图片一个稳定编号。"
-          },
-          "alarm_type": {
-            "type": "string",
-            "enum": [
-              "no_helmet",
-              "no_vest",
-              "danger_zone",
-              "combined"
-            ],
-            "title": "Alarm Type"
-          },
           "image_base64": {
             "type": "string",
             "maxLength": 11184812,
             "minLength": 4,
             "title": "Image Base64",
             "description": "JPEG/PNG，标准 Base64，无前缀"
-          },
-          "camera_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 100
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Camera Id"
-          },
-          "occurred_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Occurred At"
           },
           "roi": {
             "anyOf": [
@@ -529,15 +719,76 @@
               }
             ],
             "title": "Person Boxes"
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Project Id",
+            "description": "项目编号，1–100 个字符。"
+          },
+          "alert_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Alert Id"
+          },
+          "alarm_type": {
+            "type": "string",
+            "enum": [
+              "no_helmet",
+              "no_vest",
+              "danger_zone",
+              "combined"
+            ],
+            "title": "Alarm Type"
+          },
+          "camera_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera Id"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "image_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Id",
+            "description": "旧版单图请求的图片编号。"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
+          "image_base64",
           "project_id",
           "alert_id",
-          "alarm_type",
-          "image_base64"
+          "alarm_type"
         ],
         "title": "Submission"
       },
@@ -679,6 +930,13 @@
             ],
             "title": "Finished At"
           },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/FrameResult"
+            },
+            "type": "array",
+            "title": "Images"
+          },
           "person_boxes": {
             "anyOf": [
               {
@@ -794,6 +1052,7 @@
           "model",
           "rule_version",
           "finished_at",
+          "images",
           "roi",
           "camera_id",
           "started_at",

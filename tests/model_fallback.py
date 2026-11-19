@@ -162,7 +162,7 @@ uvicorn.run(main.api, host='127.0.0.1', port=int(os.environ['MODEL_TEST_PORT']),
         first.behavior = second.behavior = "error"
         failed = site.submit("both-fail")
         for attempt in (1, 2):
-            until(lambda: task(failed) if task(failed)["status"] == "retrying" and task(failed)["review_attempts"] == attempt else None)
+            until(lambda: site.attempt(failed, "status", "retrying", "review_attempts", attempt))
             with sqlite3.connect(site.state / "live/tasks.sqlite3") as db:
                 db.execute("UPDATE tasks SET review_due=0 WHERE task_id=?", (failed,))
         result = site.wait(failed, "status", "failed")
