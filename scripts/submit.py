@@ -48,6 +48,7 @@ def main():
     p.add_argument("--base", required=True, help="含 /api/v1 的接口地址")
     p.add_argument("--project", required=True, help="4S 提供的项目编号")
     p.add_argument("--alert", required=True)
+    p.add_argument("--image-id", help="同一报警内的图片编号，重传时保持一致")
     p.add_argument("--type", default="no_helmet", choices=["no_helmet","no_vest","danger_zone","combined"])
     p.add_argument("--wait", action="store_true", help="最多等待 90 秒，输出审核结果和当前回调状态")
     args = p.parse_args()
@@ -58,6 +59,8 @@ def main():
         p.error("请选择 8 MiB 以内的图片文件")
     payload = dict(project_id=args.project, alert_id=args.alert, alarm_type=args.type,
                    image_base64=base64.b64encode(args.image.read_bytes()).decode())
+    if args.image_id is not None:
+        payload["image_id"] = args.image_id
     try:
         client = api_client(args.base)
         url = args.base.rstrip("/") + "/tasks"

@@ -99,7 +99,7 @@ mkdir -p var
 - 启用备用模型后，主模型超时或发生接口、格式等技术故障时，本次任务自动尝试备用模型；下一张图片仍先使用主模型。`uncertain` 是正常业务结论，不会触发备用模型。主备均失败时按原重试规则处理，最终技术失败的结论为空。详情页记录每次主备调用和结果；超时后供应商可能仍收取主模型费用。
 - 正式推理会将图片或裁好的区域发送给选中的供应商。用户可在内部详情查看已保存的型号、规则版本、耗时和理由。图片、结果和任务持久化在选定的数据卷。PPE 准确度、真实延迟、价格和公司数据处理要求需要由试点方评估。[DeepSeek 图片接口](https://api-docs.deepseek.com/zh-cn/guides/vision/) · [百炼视觉接口](https://help.aliyun.com/zh/model-studio/vision/)
 - 4S 需给出接收回调的 HTTPS 地址和单独的 Bearer 令牌，并确认 2xx 为已保存。回调失败有自动重试，必要时从详情页重发。平台可同时使用查询接口。手工重发会开启新的回调尝试批次，字段 callback_attempts 显示该批次次数。
-- 一期审核安全帽和反光衣。两张图中即使报警类型一样，也要分别提交不同报警编号。项目内报警 ID 是否唯一、已有类型码映射、是否传整图或矩形 ROI、组合类型含义、危险区域定义和故障时的展示策略，需要和 4S 确认。试点并发、识别表现和客户通知逻辑尚需两侧实测。
+- 一期审核安全帽和反光衣。同一报警有多张图时共用报警编号，分别提交不同的图片编号，每张返回自己的复核结果。项目内报警 ID 是否唯一、已有类型码映射、是否传整图或矩形 ROI、组合类型含义、危险区域定义和故障时的展示策略，需要和 4S 确认。试点并发、识别表现和客户通知逻辑尚需两侧实测。
 
 ## Data 盘上保存什么
 
@@ -127,3 +127,5 @@ TMPDIR="$PWD/var/tmp" PIP_CACHE_DIR="$PWD/var/pip-cache" .venv/bin/python -m pip
 ```
 
 更新 `docs/4S-API.md` 后，用装有 ReportLab 的 Python 运行 `scripts/render_api_pdf.py`，再运行 `.venv/bin/python -B scripts/package.py` 重建接入包。PDF 默认使用 Mac 的中文字体，其他系统可用 `FOUR_S_PDF_FONT` 和 `FOUR_S_PDF_BOLD` 指定中文 TrueType 字体文件。
+
+Windows Server 2016 安装及切换步骤见 [Windows 部署](windows/部署.md)。

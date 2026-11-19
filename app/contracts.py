@@ -58,6 +58,8 @@ class Submission(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str = Field(min_length=1, max_length=100, description="项目编号，1–100 个字符。")
     alert_id: str = Field(min_length=1, max_length=100)
+    image_id: Optional[str] = Field(default=None, min_length=1, max_length=100,
+                                    description="图片编号。同一报警多图时逐张提交，给每张图片一个稳定编号。")
     alarm_type: Alarm
     image_base64: str = Field(min_length=4, max_length=4 * ((MAX_IMAGE + 2) // 3), description="JPEG/PNG，标准 Base64，无前缀")
     camera_id: Optional[str] = Field(default=None, max_length=100)
@@ -65,7 +67,7 @@ class Submission(BaseModel):
     roi: Optional[Box] = None
     person_boxes: Optional[list[Box]] = None
 
-    @field_validator("project_id", "alert_id", "camera_id")
+    @field_validator("project_id", "alert_id", "image_id", "camera_id")
     @classmethod
     def clean_id(cls, value):
         if value is not None and (not value.strip() or value.strip() != value or not value.isprintable()):
@@ -86,6 +88,7 @@ class Event(BaseModel):
     task_id: str
     project_id: str
     alert_id: str
+    image_id: Optional[str] = None
     alarm_type: Alarm
     occurred_at: Optional[str]
     mode: Literal["live"]
@@ -134,6 +137,8 @@ def unpack(s):
         raise ValueError("图片损坏或尺寸过大") from exc
     meta = s.model_dump(exclude={"image_base64","occurred_at"})
     meta["occurred_at"] = s.occurred_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if s.occurred_at else None
+    if meta["image_id"] is None:
+        del meta["image_id"]  # Legacy single-image requests retain their signature.
     if meta["person_boxes"] is None:
         del meta["person_boxes"]  # Preserve signatures of submissions made before boxes were supported.
     signature = hashlib.sha256(json.dumps(meta, sort_keys=True).encode() + hashlib.sha256(data).digest()).hexdigest()

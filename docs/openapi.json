@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "4S 报警复核接口",
-    "version": "1.6.0"
+    "version": "1.7.0"
   },
   "paths": {
     "/api/v1/tasks": {
@@ -34,7 +34,7 @@
             }
           },
           "200": {
-            "description": "相同报警已接收",
+            "description": "相同报警图片已接收",
             "content": {
               "application/json": {
                 "schema": {
@@ -223,6 +223,17 @@
           "alert_id": {
             "type": "string",
             "title": "Alert Id"
+          },
+          "image_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Id"
           },
           "alarm_type": {
             "type": "string",
@@ -429,6 +440,20 @@
             "minLength": 1,
             "title": "Alert Id"
           },
+          "image_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Id",
+            "description": "图片编号。同一报警多图时逐张提交，给每张图片一个稳定编号。"
+          },
           "alarm_type": {
             "type": "string",
             "enum": [
@@ -539,6 +564,17 @@
           "alert_id": {
             "type": "string",
             "title": "Alert Id"
+          },
+          "image_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Id"
           },
           "alarm_type": {
             "type": "string",

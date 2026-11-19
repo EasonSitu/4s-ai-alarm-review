@@ -1,4 +1,3 @@
-import fcntl
 import base64
 import hashlib
 import hmac
@@ -23,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import store
-from .config import CONFIG_LOCK, DISK, MAX_BODY, ROOT, STATE, admin_password, callback_ready, init_config, model_ready, save_config
+from .config import acquire_file_lock, CONFIG_LOCK, DISK, MAX_BODY, ROOT, STATE, admin_password, callback_ready, init_config, model_ready, save_config
 from .contracts import CallbackEvent, Delivery, Health, RequestError, Status, Submission, Task, Verdict, unpack
 from .model_catalog import list_models as provider_catalog, valid_base
 from .model_profiles import MODEL_FIELDS, probe, with_profile
@@ -39,7 +38,7 @@ Lane = Literal["live"]
 async def lifespan(app):
     cfg.update(init_config())
     with (STATE / "worker.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquire_file_lock(lock, blocking=False)
         stop = threading.Event()
         threads = []
         store.init("live", cfg)
@@ -56,7 +55,7 @@ async def lifespan(app):
                 await run_in_threadpool(t.join, 1)
 
 
-api = FastAPI(title="4S 报警复核接口", version="1.6.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+api = FastAPI(title="4S 报警复核接口", version="1.7.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -81,7 +80,7 @@ class Gate:
         if path.startswith(("/admin", "/internal")):
             forwarded = any(k in req.headers for k in ("forwarded","x-forwarded-for","x-forwarded-host","x-real-ip","cf-connecting-ip"))
             if forwarded or req.client is None or req.client.host not in LOCAL or req.url.hostname not in LOCAL:
-                rejection = fail(403, "内部页面仅限 Mac 本机访问")
+                rejection = fail(403, "内部页面仅限服务器本机访问")
             elif path.startswith("/admin"):
                 expected = base64.b64encode(("admin:"+admin_password(cfg)).encode()).decode()
                 if not eq(req.headers.get("authorization",""), "Basic "+expected):
@@ -144,7 +143,7 @@ async def invalid(req, exc):
 
 @api.exception_handler(sqlite3.OperationalError)
 async def unavailable(req, exc):
-    return fail(503, "数据库暂不可写或不可读，请检查 Data 外置盘并原样重试")
+    return fail(503, "数据库暂不可写或不可读，请检查数据盘并原样重试")
 
 
 def submit(mode, s, response):
@@ -157,7 +156,7 @@ def submit(mode, s, response):
     except ValueError as exc:
         raise HTTPException(422, [{"loc": ["body", "image_base64"], "msg": str(exc)}])
     except store.Conflict:
-        raise HTTPException(409, "该报警编号已接收，图片或元数据与原件不一致")
+        raise HTTPException(409, "该项目、报警和图片编号已接收，内容与原件不一致")
     response.status_code = 202 if fresh else 200
     return task
 
@@ -172,7 +171,7 @@ def lookup(mode, task_id):
 def routes(mode, prefix):
     @api.post(prefix + "/tasks", status_code=202, tags=[mode], response_model=Task, dependencies=[Depends(bearer)],
               include_in_schema=mode=="live", operation_id=mode+"_submit", summary="接收并保存一张报警图片",
-              responses={200: {"model": Task, "description":"相同报警已接收"}, 409: {"description":"相同编号内容冲突"},
+              responses={200: {"model": Task, "description":"相同报警图片已接收"}, 409: {"description":"相同编号内容冲突"},
                          401: {"description":"令牌错误"}, 413: {"description":"请求过大"}, 415: {"description":"格式错误"},
                          422: {"model": RequestError, "description": "字段、图片或 ROI 无效"},
                          503: {"description":"收件服务暂不可用"}})
@@ -258,7 +257,7 @@ def model_revision(saved, name):
 
 
 def saved_models():
-    saved = json.loads((STATE / "config.json").read_text())
+    saved = json.loads((STATE / "config.json").read_text(encoding="utf-8"))
     if not saved.get("active_profile") and model_ready(cfg):
         saved.setdefault("model_profiles", {}).setdefault("legacy", {key: cfg[key] for key in MODEL_FIELDS})
     return saved
@@ -316,7 +315,7 @@ def save_model(form: ModelSettings):
     try:
         parsed = valid_base(base)
         with (STATE / "control.lock").open("a+") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            acquire_file_lock(lock)
             with CONFIG_LOCK:
                 saved = saved_models()
                 profiles = saved.setdefault("model_profiles", {})
@@ -361,7 +360,7 @@ def activate_config(saved, previous):
 @api.post("/admin/api/models/activate", include_in_schema=False)
 def activate_model(form: ModelChoice):
     with (STATE / "control.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        acquire_file_lock(lock)
         saved = saved_models()
         try:
             candidate = with_profile(saved, form.name)
@@ -381,7 +380,7 @@ def activate_routing(form: RoutingChoice):
     if form.fallback and form.primary == form.fallback:
         raise HTTPException(422, "主模型和备用模型请选择不同的配置")
     with (STATE / "control.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        acquire_file_lock(lock)
         saved = saved_models()
         try:
             primary = with_profile(saved, form.primary)
@@ -408,7 +407,7 @@ def activate_routing(form: RoutingChoice):
 @api.post("/admin/api/models/pause", include_in_schema=False)
 def pause_models():
     with (STATE / "control.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        acquire_file_lock(lock)
         saved = saved_models()
         activate_config(dict(saved, active_profile="off", model="", model_base="", model_key=""), saved)
     return {"active_profile": "off"}

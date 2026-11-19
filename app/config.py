@@ -1,5 +1,4 @@
 import json
-import fcntl
 import os
 import plistlib
 import secrets
@@ -22,6 +21,18 @@ MODEL_NAME = "deepseek-flash"
 CONFIG_LOCK = threading.RLock()
 
 
+def acquire_file_lock(handle, blocking=True):
+    # Closing the handle releases the lock on both platforms.
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        fcntl.flock(handle, flags)
+
+
 def check_disk():
     if DISK == Path("/") or not os.path.ismount(DISK) or DISK not in ROOT.parents or ROOT not in STATE.parents:
         raise RuntimeError("项目和状态目录必须位于已挂载的专用数据卷")
@@ -29,8 +40,14 @@ def check_disk():
         info = plistlib.loads(subprocess.check_output(["/usr/sbin/diskutil", "info", "-plist", str(DISK)]))
         if info.get("Internal") is not False or info.get("MountPoint") != str(DISK):
             raise RuntimeError("Mac 试点数据目录须位于外置卷")
+    elif os.name == "nt":
+        from ctypes import windll
+        if (not os.environ.get("FOUR_S_VOLUME") or DISK != Path(DISK.anchor)
+                or DISK.drive.casefold() == os.environ["SystemDrive"].casefold()
+                or windll.kernel32.GetDriveTypeW(str(DISK)) != 3):
+            raise RuntimeError("Windows 部署须指定独立的本地固定数据盘，如 D 盘")
     elif not sys.platform.startswith("linux"):
-        raise RuntimeError("目前支持 macOS 及使用专用挂载卷的 Linux 部署")
+        raise RuntimeError("目前支持 macOS 及使用专用挂载卷的 Linux / Windows 部署")
     if ROOT.stat().st_dev != DISK.stat().st_dev:
         raise RuntimeError("数据目录必须位于 Data 卷内")
 
@@ -48,9 +65,9 @@ def init_config():
                       model_base="", model_key="", callback_url="", callback_token="")
         with config_path.open("x") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-    config = validate_config(json.loads(config_path.read_text()))
+    config = validate_config(json.loads(config_path.read_text(encoding="utf-8")))
     with (STATE/"admin.secret").open("a+") as secret:
-        fcntl.flock(secret, fcntl.LOCK_EX)
+        acquire_file_lock(secret)
         secret.seek(0)
         password = secret.read().strip()
         if not password:

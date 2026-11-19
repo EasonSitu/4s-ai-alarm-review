@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -29,6 +30,33 @@ def db(mode):
         conn.close()
 
 
+def migrate_image_identity(c):
+    """Replace the old UNIQUE constraint while retaining task IDs, children and indexes."""
+    if "image_id" in {row["name"] for row in c.execute("PRAGMA table_info(tasks)")}:
+        return
+    ddl = c.execute("SELECT sql FROM sqlite_schema WHERE name='tasks'").fetchone()[0]
+    # SQLite appends ALTER TABLE columns before the existing table constraint.
+    # Reuse the installed schema to retain columns from earlier releases.
+    table, n = re.subn(r"(?i)UNIQUE\s*\(\s*project_id\s*,\s*alert_id\s*\)",
+                       "image_id TEXT NOT NULL DEFAULT '', UNIQUE(project_id,alert_id,image_id)", ddl)
+    if n != 1:
+        raise RuntimeError("无法识别旧版报警索引")
+    table, n = re.subn(r'(?i)^CREATE TABLE "?tasks"?\s*\(', "CREATE TABLE tasks_v2 (", table)
+    if n != 1:
+        raise RuntimeError("无法识别旧版任务表")
+    indexes = c.execute("SELECT sql FROM sqlite_schema WHERE tbl_name='tasks' AND type IN ('index','trigger') AND sql IS NOT NULL").fetchall()
+    cols = ",".join('"' + row["name"].replace('"', '""') + '"' for row in c.execute("PRAGMA table_info(tasks)"))
+    c.execute("DROP VIEW IF EXISTS pilot_tasks")
+    c.execute(table)
+    c.execute(f"INSERT INTO tasks_v2 ({cols}) SELECT {cols} FROM tasks")
+    c.execute("DROP TABLE tasks")
+    c.execute("ALTER TABLE tasks_v2 RENAME TO tasks")
+    for row in indexes:
+        c.execute(row[0])
+    if c.execute("PRAGMA foreign_key_check").fetchone():
+        raise RuntimeError("迁移后任务关联检查失败")
+
+
 def init(mode, cfg):
     (STATE / mode).mkdir(exist_ok=True, mode=0o700)
     with db(mode) as c:
@@ -42,14 +70,17 @@ def init(mode, cfg):
             rule_version TEXT NOT NULL, review_attempts INTEGER NOT NULL DEFAULT 0,
             review_due REAL NOT NULL DEFAULT 0, callback_status TEXT NOT NULL DEFAULT 'waiting_result',
             callback_attempts INTEGER NOT NULL DEFAULT 0, callback_due REAL NOT NULL DEFAULT 0,
-            callback_error TEXT, UNIQUE(project_id,alert_id)
+            callback_error TEXT, image_id TEXT NOT NULL DEFAULT '', UNIQUE(project_id,alert_id,image_id)
         );
         CREATE TABLE IF NOT EXISTS images (task_id TEXT PRIMARY KEY REFERENCES tasks, mime TEXT NOT NULL, data BLOB NOT NULL);
         CREATE INDEX IF NOT EXISTS review_queue ON tasks(status, review_due, received_at);
         CREATE INDEX IF NOT EXISTS delivery_queue ON tasks(callback_status, callback_due, received_at);
         CREATE INDEX IF NOT EXISTS received ON tasks(received_at);
         """)
+        # SQLite requires foreign keys disabled outside the transaction for table rebuilds.
+        c.execute("PRAGMA foreign_keys=OFF")
         c.execute("BEGIN IMMEDIATE")
+        migrate_image_identity(c)
         if "person_boxes" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN person_boxes TEXT")
         if "historical_test" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
@@ -101,7 +132,7 @@ class Conflict(Exception):
 def add(mode, cfg, meta, data, mime, signature):
     with db(mode) as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM tasks WHERE project_id=? AND alert_id=?", (meta["project_id"], meta["alert_id"])).fetchone()
+        row = c.execute("SELECT * FROM tasks WHERE project_id=? AND alert_id=? AND image_id=?", (meta["project_id"], meta["alert_id"], meta.get("image_id") or "")).fetchone()
         if row:
             if row["signature"] != signature:
                 raise Conflict
@@ -111,15 +142,16 @@ def add(mode, cfg, meta, data, mime, signature):
         external = model is None
         waiting = external and not model_ready(cfg)
         c.execute("""INSERT INTO tasks(task_id,project_id,alert_id,alarm_type,occurred_at,camera_id,roi,
-                   signature,received_at,status,rule_version,person_boxes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   signature,received_at,status,rule_version,person_boxes,image_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (task_id, meta["project_id"], meta["alert_id"], meta["alarm_type"], meta["occurred_at"],
-                   meta["camera_id"], json.dumps(meta["roi"]), signature, now(), "awaiting_model" if waiting else "queued", RULE, json.dumps(meta.get("person_boxes"))))
+                   meta["camera_id"], json.dumps(meta["roi"]), signature, now(), "awaiting_model" if waiting else "queued", RULE, json.dumps(meta.get("person_boxes")), meta.get("image_id") or ""))
         c.execute("INSERT INTO images VALUES(?,?,?)", (task_id, mime, data))
         return view(mode, c.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()), True
 
 
 def view(mode, row):
     data = dict(row)
+    data["image_id"] = data["image_id"] or None
     data["person_boxes"] = json.loads(data["person_boxes"]) if data["person_boxes"] else None
     data.update(mode=mode, roi=json.loads(data["roi"]))
     return Task.model_validate(data).model_dump()

@@ -26,7 +26,7 @@ def relay(method, path, headers, data):
         return Response(reply.read(), status_code=reply.status,
                         headers={"Content-Type": reply.getheader("Content-Type", "application/octet-stream")})
     except (OSError, http.client.HTTPException):
-        return fail(503, "Mac 收件服务暂不可用，请保留原编号重试")
+        return fail(503, "收件服务暂不可用，请保留原编号重试")
     finally:
         conn.close()
 

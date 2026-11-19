@@ -55,7 +55,7 @@ async function refresh() {
     const fragment=document.createDocumentFragment();
     for(const t of result.items){
       const row=node('tr'), first=node('td');
-      first.append(node('strong',t.alert_id),node('small',t.project_id));
+      first.append(node('strong',t.alert_id),node('small',[t.project_id,t.image_id].filter(Boolean).join(' / ')));
       row.append(first,node('td',alarms[t.alarm_type]),node('td',dateText(t.received_at)));
       for(const item of [chip(t.status,states),chip(t.verdict,verdicts),chip(t.callback_status,callbacks)]){
         const cell=node('td');cell.append(item);row.append(cell);
@@ -82,7 +82,7 @@ async function showDetail(taskId, poll=false){
     const src=base()+'/'+taskId+'/image';
     if($('preview').getAttribute('src')!==src){$('preview').src=src;$('fullImage').removeAttribute('src');}
     $('scope').textContent=t.roi?'审核矩形（左、上、右、下） '+t.roi.join(' / '):'审核范围 · 整张图片';
-    const facts={'报警编号':t.alert_id,'项目编号':t.project_id,'报警类型':alarms[t.alarm_type],'摄像头':t.camera_id,
+    const facts={'报警编号':t.alert_id,'图片编号':t.image_id,'项目编号':t.project_id,'报警类型':alarms[t.alarm_type],'摄像头':t.camera_id,
       '原报警时间':dateText(t.occurred_at),'收件时间':dateText(t.received_at),'处理状态':states[t.status],
       '模型 / 规则':(t.model||'—')+' / '+t.rule_version,'审核尝试':t.review_attempts+' 次','本次耗时':t.elapsed_ms==null?'—':t.elapsed_ms+' ms',
       '完成时间':dateText(t.finished_at),'回调状态':callbacks[t.callback_status],
@@ -123,6 +123,7 @@ $('uploadForm').onsubmit=async e=>{
   try{
     const data=await new Promise((ok,fail)=>{const reader=new FileReader();reader.onload=()=>ok(reader.result.split(',')[1]);reader.onerror=()=>fail(Error('读取图片失败'));reader.readAsDataURL(file);});
     const payload={project_id:f.project_id.value,alert_id:f.alert_id.value,alarm_type:f.alarm_type.value,image_base64:data};
+    if(f.image_id.value) payload.image_id=f.image_id.value;
     const t=await fetchJson(base(),{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Action':'1'},body:JSON.stringify(payload)});
     $('upload').close();$('filters').reset();await refresh();await showDetail(t.task_id);
   }catch(err){$('uploadError').textContent=err.message;}finally{$('send').disabled=false;}
