@@ -88,7 +88,10 @@ class Submission(AlarmFields, FrameInput):
     image_id: Optional[str] = Field(default=None, min_length=1, max_length=100,
                                     description="旧版单图请求的图片编号。")
 
-    _clean_image_id = field_validator("image_id")(AlarmFields.clean_id)
+    @field_validator("image_id")
+    @classmethod
+    def clean_image_id(cls, value):
+        return AlarmFields.clean_id(value)
 
 
 class AlarmSubmission(AlarmFields):

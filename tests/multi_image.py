@@ -65,6 +65,12 @@ def run(state):
             assert site.api("/admin/api/live/tasks/"+task+"/image?index=2")[1]==base64.b64decode(frames[1]["image_base64"])
             assert site.api(path,dict(req,images=frames[::-1]))[0]==409
             assert site.api(path,dict(site.payload("mixed"),image_id="new"))[0]==409
+            legacy = dict(site.payload("legacy-frame"), image_id="frame-01")
+            code, accepted = site.api(path, legacy)
+            assert code == 202 and accepted["image_id"] == "frame-01"
+            code, duplicate = site.api(path, legacy)
+            assert code == 200 and duplicate["task_id"] == accepted["task_id"]
+            assert site.api(path, dict(legacy, image_id=" frame-01"))[0] == 422
             for invalid in (dict(req,images=[]),dict(req,images=frames*2),dict(req,roi=[0,0,1,1]),
                             dict(req,images=[frames[0],{"image_base64":"YWJj"}])):
                 assert site.api(path,dict(invalid, alert_id="invalid"))[0]==422
