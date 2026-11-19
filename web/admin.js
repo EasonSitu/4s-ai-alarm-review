@@ -45,7 +45,8 @@ async function refresh() {
     maxPage=Math.max(1,Math.ceil(result.total/25));
     if(page>maxPage){page=maxPage;return refresh();}
     notice();$('health').className='health on';$('health').textContent='本机服务在线';
-    $('config').textContent=(result.model_ready?'当前模型 · '+result.model_name:'仅收图 · 等待启用模型')+'　/　'+(result.callback_ready?'4S 回调已配置':'4S 回调待配置');
+    const modelStatus=result.model_ready?'主模型 · '+result.model_name+(result.fallback_model?'　/　备用 · '+result.fallback_model:''):'仅收图 · 等待启用模型';
+    $('config').textContent=modelStatus+'　/　'+(result.callback_ready?'4S 回调已配置':'4S 回调待配置');
     if(result.failed_callbacks)notice('有 '+result.failed_callbacks+' 条回调已耗尽重试，请筛选“回调失败”处理。');
     const c=result.counts;
     const sum=Object.values(c).reduce((a,b)=>a+b,0);
@@ -86,6 +87,9 @@ async function showDetail(taskId, poll=false){
       '模型 / 规则':(t.model||'—')+' / '+t.rule_version,'审核尝试':t.review_attempts+' 次','本次耗时':t.elapsed_ms==null?'—':t.elapsed_ms+' ms',
       '完成时间':dateText(t.finished_at),'回调状态':callbacks[t.callback_status],
       '回调尝试':t.callback_attempts+' 次','任务编号':t.task_id};
+    if(t.model_calls&&t.model_calls.length)facts['模型调用']=t.model_calls.map(c=>
+      '第 '+c.attempt+' 次 '+(c.role==='primary'?'主模型':'备用模型')+' '+c.requested_model+'：'+
+      ({completed:'完成',failed:'失败',processing:'处理中',interrupted:'中断'}[c.status]||c.status)+(c.error?'（'+c.error+'）':'')).join('；');
     $('facts').replaceChildren(...Object.entries(facts).flatMap(([k,v])=>[node('dt',k),node('dd',v??'—')]));
     $('deliveryError').textContent=t.callback_error||'';$('resend').hidden=t.callback_status!=='failed';
     if(!$('detail').open)$('detail').showModal();
@@ -128,6 +132,7 @@ let modelData = {profiles: []};
 const modelForm = $('modelForm');
 const modelSelect = $('modelProfiles');
 const modelHeaders = {'Content-Type':'application/json','X-Admin-Action':'1'};
+const providerBases = {deepseek:'https://api.deepseek.com',bailian:'https://dashscope.aliyuncs.com/compatible-mode/v1',compatible:''};
 
 function modelMessage(message, error=false) {
   $('modelMessage').textContent = message;
@@ -139,9 +144,11 @@ function showModelForm() {
   const fields = modelForm.elements;
   fields.name.value = profile ? profile.name : '';
   fields.name.readOnly = Boolean(profile);
-  fields.model_base.value = profile ? profile.model_base : '';
+  fields.provider.value = profile ? profile.provider : 'deepseek';
+  fields.model_base.value = profile ? profile.model_base : providerBases[fields.provider.value];
   fields.model.value = profile ? profile.model : '';
   fields.model_key.value = '';
+  $('catalogModels').replaceChildren(new Option('先读取模型列表，也可以手动填写',''));
   $('modelKeyHelp').textContent = profile && profile.has_key
     ? '已保存 API Key。留空会继续使用，填写新值可更换。'
     : '请填写与该地址对应的 API Key。';
@@ -150,18 +157,31 @@ function showModelForm() {
 async function loadModels(preferred) {
   modelData = await fetchJson('/admin/api/models');
   $('activeModel').textContent = modelData.active_model
-    ? '当前使用 ' + modelData.active_profile + ' · ' + modelData.active_model
+    ? '当前主模型：' + modelData.active_profile + ' · ' + modelData.active_model +
+      (modelData.fallback_model ? '；备用：' + modelData.fallback_profile + ' · ' + modelData.fallback_model : '；未设置备用模型')
     : '当前已暂停审核，图片会先保存。';
   modelSelect.replaceChildren();
   modelData.profiles.forEach(profile => modelSelect.add(new Option(profile.name + ' · ' + profile.model, profile.name)));
   modelSelect.add(new Option('＋ 添加新配置', ''));
-  const selectedName = preferred !== undefined ? preferred : modelData.active_profile;
+  const selectedName = preferred !== undefined ? preferred : (modelData.active_model ? modelData.active_profile : modelData.preferred_primary);
   modelSelect.value = modelData.profiles.some(item => item.name === selectedName) ? selectedName : '';
+  const primary=$('primaryProfile'), fallback=$('fallbackProfile');
+  primary.replaceChildren(new Option('请选择主模型',''));
+  fallback.replaceChildren(new Option('不使用备用模型',''));
+  modelData.profiles.forEach(profile => {
+    const label=profile.name+' · '+profile.model;
+    primary.add(new Option(label,profile.name));fallback.add(new Option(label,profile.name));
+  });
+  const wantedPrimary=modelData.active_model?modelData.active_profile:(modelData.preferred_primary||'');
+  primary.value=modelData.profiles.some(item=>item.name===wantedPrimary)?wantedPrimary:'';
+  const wantedFallback=modelData.fallback_profile||modelData.preferred_fallback||'';
+  fallback.value=modelData.profiles.some(item=>item.name===wantedFallback)?wantedFallback:'';
+  $('primaryTimeout').value=modelData.timeout_seconds||15;
   showModelForm();
 }
 
 function modelBusy(busy) {
-  ['saveModel','activateModel','pauseModel'].forEach(id => $(id).disabled = busy);
+  ['saveModel','fetchCatalog','activateModel','pauseModel'].forEach(id => $(id).disabled = busy);
 }
 
 async function saveModelForm() {
@@ -171,7 +191,7 @@ async function saveModelForm() {
   if (!modelSelect.value && modelData.profiles.some(profile => profile.name === name)) {
     throw Error('此配置名称已存在，请在上方选择后修改。');
   }
-  const payload = {name, model_base:fields.model_base.value.trim(), model:fields.model.value.trim(),
+  const payload = {name, provider:fields.provider.value, model_base:fields.model_base.value.trim(), model:fields.model.value.trim(),
                    model_key:fields.model_key.value.trim()};
   const result = await fetchJson('/admin/api/models/save', {method:'POST', headers:modelHeaders, body:JSON.stringify(payload)});
   fields.model_key.value = '';
@@ -185,27 +205,49 @@ $('modelSettingsBtn').onclick = async () => {
   catch (error) { modelMessage(error.message, true); }
 };
 modelSelect.onchange = () => { showModelForm(); modelMessage(''); };
+modelForm.elements.provider.onchange=()=>{
+  modelForm.elements.model_base.value=providerBases[modelForm.elements.provider.value];
+  $('catalogModels').replaceChildren(new Option('先读取模型列表，也可以手动填写',''));
+};
+$('catalogModels').onchange=()=>{if($('catalogModels').value)modelForm.elements.model.value=$('catalogModels').value;};
+$('fetchCatalog').onclick=async()=>{
+  const fields=modelForm.elements;
+  if(!fields.model_base.reportValidity())return;
+  modelBusy(true);modelMessage('正在读取平台模型列表…');
+  try{
+    const result=await fetchJson('/admin/api/models/catalog',{method:'POST',headers:modelHeaders,body:JSON.stringify({
+      provider:fields.provider.value,name:modelSelect.value||null,model_base:fields.model_base.value.trim(),
+      model_key:fields.model_key.value.trim()})});
+    $('catalogModels').replaceChildren(new Option('请选择模型',''));
+    result.models.forEach(item=>$('catalogModels').add(new Option(item.id+(item.vision==='unknown'?'（图片能力待验证）':''),item.id)));
+    modelMessage('读取到 '+result.models.length+' 个模型'+(result.truncated?'（列表已截断）':'')+'。选择后请保存配置。');
+  }catch(error){modelMessage(error.message,true);}finally{modelBusy(false);}
+};
 $('modelSettings').addEventListener('close', () => { modelForm.elements.model_key.value = ''; });
 modelForm.onsubmit = async event => {
   event.preventDefault();
   modelBusy(true);
   try {
     const saved = await saveModelForm();
-    if (saved) { await loadModels(saved.name); modelMessage('配置已保存。点击「验证并启用」后生效。'); }
+    if (saved) { await loadModels(saved.name); modelMessage('模型配置已保存。请选择主备，再点击「验证并启用主备」。'); }
   } catch (error) { modelMessage(error.message, true); }
   finally { modelBusy(false); }
 };
 $('activateModel').onclick = async () => {
   modelBusy(true);
   try {
-    const saved = await saveModelForm();
-    if (!saved) return;
-    modelMessage('正在用合成图片验证模型，请稍候…');
-    await fetchJson('/admin/api/models/activate', {method:'POST', headers:modelHeaders,
-                                                  body:JSON.stringify({name:saved.name, revision:saved.revision})});
-    await loadModels(saved.name);
+    const primary=modelData.profiles.find(item=>item.name===$('primaryProfile').value);
+    const fallback=modelData.profiles.find(item=>item.name===$('fallbackProfile').value);
+    if(!primary)throw Error('请先保存并选择主模型。');
+    if(fallback&&fallback.name===primary.name)throw Error('主模型和备用模型请选择不同配置。');
+    if(!$('primaryTimeout').reportValidity())return;
+    modelMessage('正在用合成图片验证主模型和备用模型，请稍候…');
+    await fetchJson('/admin/api/models/routing', {method:'POST', headers:modelHeaders, body:JSON.stringify({
+      primary:primary.name,primary_revision:primary.revision,fallback:fallback?fallback.name:null,
+      fallback_revision:fallback?fallback.revision:null,timeout_seconds:Number($('primaryTimeout').value)})});
+    await loadModels(primary.name);
     await refresh();
-    modelMessage('验证通过，模型已启用。');
+    modelMessage('验证通过，主备设置已启用。');
   } catch (error) { modelMessage(error.message, true); }
   finally { modelBusy(false); }
 };

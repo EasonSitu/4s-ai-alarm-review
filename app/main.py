@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 from . import store
 from .config import CONFIG_LOCK, DISK, MAX_BODY, ROOT, STATE, admin_password, callback_ready, init_config, model_ready, save_config
 from .contracts import CallbackEvent, Delivery, Health, RequestError, Status, Submission, Task, Verdict, unpack
+from .model_catalog import list_models as provider_catalog, valid_base
 from .model_profiles import MODEL_FIELDS, probe, with_profile
 from .review import RemoteError
 from .worker import work
@@ -213,6 +214,7 @@ class ModelSettings(BaseModel):
     model_base: str = Field(min_length=1, max_length=2048)
     model: str = Field(min_length=1, max_length=160)
     model_key: Optional[str] = Field(default=None, max_length=4096, repr=False)
+    provider: Literal["deepseek", "bailian", "compatible"] = "compatible"
 
 
 class ModelChoice(BaseModel):
@@ -221,9 +223,37 @@ class ModelChoice(BaseModel):
     revision: str = Field(min_length=64, max_length=64)
 
 
+class CatalogChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: Literal["deepseek", "bailian", "compatible"]
+    name: Optional[str] = Field(default=None, max_length=48)
+    model_base: str = Field(min_length=1, max_length=2048)
+    model_key: Optional[str] = Field(default=None, max_length=4096, repr=False)
+
+
+class RoutingChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    primary: str = Field(min_length=1, max_length=48)
+    primary_revision: str = Field(min_length=64, max_length=64)
+    fallback: Optional[str] = Field(default=None, max_length=48)
+    fallback_revision: Optional[str] = Field(default=None, max_length=64)
+    timeout_seconds: int = Field(default=15, ge=1, le=120)
+
+
+def provider_name(profile):
+    if profile.get("provider") in ("deepseek", "bailian", "compatible"):
+        return profile["provider"]
+    host = (urlsplit(profile.get("model_base", "")).hostname or "").lower()
+    if host == "api.deepseek.com":
+        return "deepseek"
+    if host.endswith(".aliyuncs.com"):
+        return "bailian"
+    return "compatible"
+
+
 def model_revision(saved, name):
     profile = saved["model_profiles"][name]
-    data = json.dumps([name, *(profile[key] for key in MODEL_FIELDS)], ensure_ascii=False).encode()
+    data = json.dumps([name, *(profile[key] for key in MODEL_FIELDS), provider_name(profile)], ensure_ascii=False).encode()
     return hmac.new(saved["live_token"].encode(), data, hashlib.sha256).hexdigest()
 
 
@@ -240,11 +270,37 @@ def list_models():
         saved = saved_models()
         profiles = [
             {"name": name, "model": profile["model"], "model_base": profile["model_base"],
-             "has_key": bool(profile.get("model_key")), "revision": model_revision(saved, name)}
+             "provider": provider_name(profile), "has_key": bool(profile.get("model_key")),
+             "revision": model_revision(saved, name)}
             for name, profile in sorted(saved.get("model_profiles", {}).items())
         ]
         return {"active_profile": cfg.get("active_profile") or ("legacy" if model_ready(cfg) else "off"),
-                "active_model": cfg["model"] if model_ready(cfg) else None, "profiles": profiles}
+                "active_model": cfg["model"] if model_ready(cfg) else None,
+                "fallback_profile": cfg.get("fallback_profile") if model_ready(cfg) else None,
+                "fallback_model": (cfg.get("fallback_config") or {}).get("model") if model_ready(cfg) else None,
+                "preferred_primary": saved.get("preferred_primary"),
+                "preferred_fallback": saved.get("preferred_fallback"),
+                "timeout_seconds": cfg.get("primary_timeout_seconds") or saved.get("primary_timeout_seconds") or 15,
+                "profiles": profiles}
+
+
+@api.post("/admin/api/models/catalog", include_in_schema=False)
+def model_catalog(form: CatalogChoice):
+    base = form.model_base.strip().rstrip("/")
+    key = (form.model_key or "").strip()
+    try:
+        parsed = valid_base(base)
+        if not key and form.name:
+            with CONFIG_LOCK:
+                old = saved_models().get("model_profiles", {}).get(form.name)
+            if old:
+                previous = urlsplit(old["model_base"])
+                if (previous.scheme, previous.hostname, previous.port) != (parsed.scheme, parsed.hostname, parsed.port):
+                    raise ValueError("更换服务地址时，请重新输入对应供应商的 API Key")
+                key = old.get("model_key", "")
+        return provider_catalog(form.provider, base, key)
+    except (ValueError, RemoteError) as exc:
+        raise HTTPException(400, str(exc)) from None
 
 
 @api.post("/admin/api/models/save", include_in_schema=False)
@@ -258,9 +314,7 @@ def save_model(form: ModelSettings):
     if not model:
         raise HTTPException(422, "请填写模型 ID")
     try:
-        parsed = urlsplit(base)
-        if parsed.query or parsed.fragment:
-            raise ValueError("API 基础地址不能包含查询参数或片段")
+        parsed = valid_base(base)
         with (STATE / "control.lock").open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             with CONFIG_LOCK:
@@ -274,7 +328,7 @@ def save_model(form: ModelSettings):
                     key = old.get("model_key", "")
                 if not key:
                     raise ValueError("请输入 API Key")
-                profiles[name] = {"model_base": base, "model": model, "model_key": key}
+                profiles[name] = {"model_base": base, "model": model, "model_key": key, "provider": form.provider}
                 with_profile(saved, name)
                 save_config(saved)
                 cfg["model_profiles"] = profiles
@@ -300,6 +354,8 @@ def activate_config(saved, previous):
             raise
         cfg.update({key: saved[key] for key in (*MODEL_FIELDS, "active_profile")})
         cfg["model_profiles"] = saved.get("model_profiles", {})
+        for key in ("fallback_profile", "fallback_config", "primary_timeout_seconds", "preferred_primary", "preferred_fallback"):
+            cfg[key] = saved.get(key)
 
 
 @api.post("/admin/api/models/activate", include_in_schema=False)
@@ -314,8 +370,39 @@ def activate_model(form: ModelChoice):
             result = probe(candidate)
         except (ValueError, RemoteError) as exc:
             raise HTTPException(400, str(exc)) from None
+        candidate.update(fallback_profile=None, fallback_config=None, primary_timeout_seconds=60,
+                         preferred_primary=form.name, preferred_fallback=None)
         activate_config(candidate, saved)
     return {"active_profile": form.name, "active_model": candidate["model"], "check": result}
+
+
+@api.post("/admin/api/models/routing", include_in_schema=False)
+def activate_routing(form: RoutingChoice):
+    if form.fallback and form.primary == form.fallback:
+        raise HTTPException(422, "主模型和备用模型请选择不同的配置")
+    with (STATE / "control.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = saved_models()
+        try:
+            primary = with_profile(saved, form.primary)
+            if not eq(form.primary_revision, model_revision(saved, form.primary)):
+                raise HTTPException(409, "主模型配置已改变，请重新选择")
+            backup = None
+            if form.fallback:
+                backup = with_profile(saved, form.fallback)
+                if not form.fallback_revision or not eq(form.fallback_revision, model_revision(saved, form.fallback)):
+                    raise HTTPException(409, "备用模型配置已改变，请重新选择")
+            primary_check = probe(primary)
+            fallback_check = probe(backup) if backup else None
+        except (ValueError, RemoteError) as exc:
+            raise HTTPException(400, str(exc)) from None
+        primary.update(fallback_profile=form.fallback or None,
+                       fallback_config={key: backup[key] for key in MODEL_FIELDS} if backup else None,
+                       primary_timeout_seconds=form.timeout_seconds,
+                       preferred_primary=form.primary, preferred_fallback=form.fallback or None)
+        activate_config(primary, saved)
+    return {"active_profile": form.primary, "fallback_profile": form.fallback or None,
+            "timeout_seconds": form.timeout_seconds, "primary_check": primary_check, "fallback_check": fallback_check}
 
 
 @api.post("/admin/api/models/pause", include_in_schema=False)
@@ -357,12 +444,18 @@ def admin_list(mode: Lane, project: str="", alert: str="", status: Optional[Stat
                          (*args,(page-1)*25)).fetchall()
     return {"items":[store.view(mode, r) for r in rows], "total":total, "counts":counts,
             "model_ready":model_ready(cfg), "model_name":cfg["model"] if model_ready(cfg) else None,
+            "fallback_model":(cfg.get("fallback_config") or {}).get("model") if model_ready(cfg) else None,
             "callback_ready":callback_ready(cfg,mode), "failed_callbacks":failed_callbacks}
 
 
 @api.get("/admin/api/{mode}/tasks/{task_id}", include_in_schema=False)
 def detail(mode: Lane, task_id: str):
-    return lookup(mode, task_id)
+    task = lookup(mode, task_id)
+    with store.db(mode) as c:
+        calls = c.execute("""SELECT attempt,role,profile,requested_model,actual_model,started_at,finished_at,status,error
+                             FROM model_call_history WHERE task_id=?
+                             ORDER BY attempt,CASE role WHEN 'primary' THEN 0 ELSE 1 END""", (task_id,)).fetchall()
+    return dict(task, model_calls=[dict(call) for call in calls])
 
 
 @api.get("/admin/api/{mode}/tasks/{task_id}/image", include_in_schema=False)

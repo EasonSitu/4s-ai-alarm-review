@@ -42,6 +42,29 @@ def diagnostic(exc):
     return str(exc) if isinstance(exc, RemoteError) else "处理异常 · " + type(exc).__name__
 
 
+def call_model(mode, cfg, t, image, role, profile, timeout):
+    remote = urlsplit(cfg["model_base"])
+    with db(mode) as c:
+        c.execute("""INSERT INTO model_call_history
+                     (task_id,attempt,role,profile,endpoint_origin,requested_model,started_at,status)
+                     VALUES(?,?,?,?,?,?,?,'processing')""",
+                  (t["task_id"],t["review_attempts"],role,profile,
+                   f"{remote.scheme}://{remote.netloc}",cfg["model"],now()))
+    try:
+        result = review(mode, cfg, t, *image, timeout=timeout)
+    except Exception as exc:
+        with db(mode) as c:
+            c.execute("""UPDATE model_call_history SET status='failed',error=?,finished_at=?
+                         WHERE task_id=? AND attempt=? AND role=?""",
+                      (diagnostic(exc),now(),t["task_id"],t["review_attempts"],role))
+        raise
+    with db(mode) as c:
+        c.execute("""UPDATE model_call_history SET status='completed',actual_model=?,finished_at=?
+                     WHERE task_id=? AND attempt=? AND role=?""",
+                  (result[2],now(),t["task_id"],t["review_attempts"],role))
+    return result
+
+
 def run_review(mode, cfg, t, delays=REVIEW_DELAYS):
     start = time.monotonic()
     attempt = t["review_attempts"]
@@ -52,7 +75,20 @@ def run_review(mode, cfg, t, delays=REVIEW_DELAYS):
             raise RemoteError("中断后已耗尽审核次数")
         with db(mode) as c:
             image = c.execute("SELECT mime,data FROM images WHERE task_id=?", (t["task_id"],)).fetchone()
-        verdict, reason, model = review(mode, cfg, t, *image)
+        if local_review_model(mode, t["project_id"], t["alarm_type"]):
+            verdict, reason, model = review(mode, cfg, t, *image)
+        else:
+            try:
+                verdict, reason, model = call_model(mode, cfg, t, image, "primary",
+                                                   cfg.get("active_profile") or "legacy",
+                                                   cfg.get("primary_timeout_seconds") or 60)
+            except RemoteError:
+                backup = cfg.get("fallback_config")
+                if not backup:
+                    raise
+                fallback = dict(cfg, **backup)
+                verdict, reason, model = call_model(mode, fallback, t, image, "fallback",
+                                                   cfg.get("fallback_profile"), 60)
         status = "completed"
     except Exception as exc:
         error = diagnostic(exc)

@@ -61,7 +61,13 @@ def init(mode, cfg):
             task_id TEXT NOT NULL REFERENCES tasks, attempt INTEGER NOT NULL, profile TEXT, endpoint_origin TEXT,
             requested_model TEXT, rule_version TEXT, started_at TEXT, finished_at TEXT, status TEXT, actual_model TEXT,
             PRIMARY KEY(task_id,attempt))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS model_call_history(
+            task_id TEXT NOT NULL REFERENCES tasks, attempt INTEGER NOT NULL, role TEXT NOT NULL,
+            profile TEXT, endpoint_origin TEXT, requested_model TEXT, actual_model TEXT,
+            started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, error TEXT,
+            PRIMARY KEY(task_id,attempt,role))""")
         c.execute("UPDATE review_history SET status='interrupted',finished_at=? WHERE status='processing'", (now(),))
+        c.execute("UPDATE model_call_history SET status='interrupted',finished_at=? WHERE status='processing'", (now(),))
         callback = "pending" if callback_ready(cfg, mode) else "unconfigured"
         c.execute("""UPDATE tasks SET status='failed', error='最后一次审核中断', finished_at=?, callback_status=?
                    WHERE historical_test=0 AND status='processing' AND review_attempts>=?""", (now(),callback,len(REVIEW_DELAYS)+1))

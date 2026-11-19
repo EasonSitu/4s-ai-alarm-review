@@ -24,6 +24,7 @@
 | 其他类型违规、图片模糊、模型超时、模拟结果是否返回约定的结论或空值？ | `app/contracts.py`、`app/review.py`、`app/store.py` |
 | 第三方看到同一回调两次时会怎样？中断审核、回调和最后一次尝试分别如何恢复？ | `app/worker.py`、`app/store.py`、[协议](docs/4S-API.md) |
 | 切换供应商后，发往哪个端点、用哪把密钥、历史记录如何解释？候选验证失败会发生什么？ | `app/config.py`、`app/model_profiles.py`、`scripts/manage.py`、`tests/profile_switch.py` |
+| 主模型超时或失败后，备用模型是否安全接管？重启、配置更改和双方故障时如何处理？ | `app/model_catalog.py`、`app/worker.py`、`app/store.py`、`tests/model_fallback.py` |
 | 换一台机器或一块盘，哪些文件必须跟着走？新旧主机能否同时投递？如何回退？ | `app/config.py`、`scripts/serve.py`、`tests/relocation.py`、迁移记录 |
 | 真实工地图是否具备自动过滤的充分证据？评测样本、人员标注、延迟目标和规模验证还缺哪些？ | 背景与实施计划第 4、5 节，验证记录 |
 

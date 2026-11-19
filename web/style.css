@@ -10,4 +10,5 @@
 #modelMessage{font-size:13px;color:#275d49;min-height:1.3em}
 #modelMessage.error{color:#a44c32}
 .modelactions{display:flex;gap:9px;flex-wrap:wrap}
+.modelsection{margin:8px 0 0;padding-top:13px;border-top:1px solid #e1e7e1;color:#294c40}
 .statsnote{margin:-11px 3px 18px;font-size:12px;color:#617068}

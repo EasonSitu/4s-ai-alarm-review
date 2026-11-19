@@ -24,15 +24,25 @@
   <form id="modelForm">
     <div class="dialoghead"><h2>模型设置</h2><button type="button" data-close aria-label="关闭模型设置">×</button></div>
     <p id="activeModel"></p>
+    <h3 class="modelsection">1. 配置平台和模型</h3>
     <label>选择配置<select id="modelProfiles"></select></label>
     <label>配置名称<input name="name" required maxlength="48" pattern="[A-Za-z0-9_-]+" placeholder="例如 deepseek 或 bailian"></label>
+    <label>模型平台<select name="provider"><option value="deepseek">DeepSeek</option><option value="bailian">阿里云百炼</option><option value="compatible">其他兼容平台</option></select></label>
     <label>API 基础地址<input name="model_base" type="url" required maxlength="2048" placeholder="例如 https://api.deepseek.com"></label>
-    <label>视觉模型 ID<input name="model" required maxlength="160" placeholder="例如 deepseek-flash"></label>
     <label>API Key<input name="model_key" type="password" maxlength="4096" autocomplete="new-password" placeholder="请输入供应商提供的 API Key"></label>
     <small id="modelKeyHelp">请填写与该地址对应的 API Key。</small>
-    <p class="modelhint">填写供应商提供的基础地址和支持图片的模型。保存后，点击「验证并启用」开始审核。</p>
+    <div><button type="button" id="fetchCatalog">读取平台模型列表</button></div>
+    <label>选择图片模型<select id="catalogModels"><option value="">先读取模型列表，也可以手动填写</option></select></label>
+    <label>视觉模型 ID<input name="model" required maxlength="160" placeholder="选择模型，或手动填写 ID"></label>
+    <small class="modelhint">列表由平台返回；实际是否可调用，会在启用前通过图片验证。</small>
+    <div><button type="submit" id="saveModel">保存模型配置</button></div>
+    <h3 class="modelsection">2. 设置审核顺序</h3>
+    <label>主模型<select id="primaryProfile"></select></label>
+    <label>备用模型<select id="fallbackProfile"></select></label>
+    <label>主模型超时切换（秒）<input id="primaryTimeout" type="number" min="1" max="120" step="1" value="15"></label>
+    <small class="modelhint">主模型超时或发生技术故障时，改用备用模型；下一张图片仍先使用主模型。备用模型也会收到图片，可能产生额外费用。</small>
     <p id="modelMessage" role="status" aria-live="polite"></p>
-    <div class="modelactions"><button type="submit" id="saveModel">保存配置</button><button type="button" id="activateModel" class="primary">验证并启用</button><button type="button" id="pauseModel">暂停审核</button></div>
+    <div class="modelactions"><button type="button" id="activateModel" class="primary">验证并启用主备</button><button type="button" id="pauseModel">暂停审核</button></div>
   </form>
 </dialog>
 </body></html>

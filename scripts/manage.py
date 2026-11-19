@@ -86,6 +86,8 @@ def check_and_select(saved, name, select):
     result = probe(candidate)
     print(json.dumps(result, ensure_ascii=False))
     if select:
+        candidate.update(fallback_profile=None, fallback_config=None, primary_timeout_seconds=60,
+                         preferred_primary=name, preferred_fallback=None)
         save(candidate)
         print("已选用", name, "，运行 ./4s restart 生效")
 

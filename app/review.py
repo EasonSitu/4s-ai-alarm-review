@@ -23,6 +23,28 @@ class NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
+def read_json_response(res, deadline, limit):
+    # A supplier may send whitespace keep-alives, so inactivity timeouts alone
+    # cannot enforce the total request time.
+    parts, size = [], 0
+    while not res.isclosed():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RemoteError("模型请求超时")
+        sock = getattr(getattr(res.fp, "raw", None), "_sock", None)
+        if sock is None:
+            raise RemoteError("模型连接异常")
+        sock.settimeout(remaining)
+        chunk = res.read1(min(16384, limit + 1 - size))
+        if not chunk:
+            break
+        parts.append(chunk)
+        size += len(chunk)
+        if size > limit:
+            raise RemoteError("模型响应过长")
+    return json.loads(b"".join(parts))
+
+
 def post_json(url, token, body, timeout, expect_json=False):
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
     req = request.Request(url, data=data, headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
@@ -35,25 +57,7 @@ def post_json(url, token, body, timeout, expect_json=False):
             if not 200 <= res.status < 300:
                 raise RemoteError(f"HTTP {res.status}")
             if expect_json:
-                # Some model APIs keep a slow response alive with whitespace. A
-                # socket inactivity timeout alone would let that block forever.
-                parts, size, limit = [], 0, 256 * 1024
-                while not res.isclosed():
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise RemoteError("模型请求超时")
-                    sock = getattr(getattr(res.fp, "raw", None), "_sock", None)
-                    if sock is None:
-                        raise RemoteError("模型连接异常")
-                    sock.settimeout(remaining)
-                    chunk = res.read1(min(16384, limit + 1 - size))
-                    if not chunk:
-                        break
-                    parts.append(chunk)
-                    size += len(chunk)
-                    if size > limit:
-                        raise RemoteError("模型响应过长")
-                return json.loads(b"".join(parts))
+                return read_json_response(res, deadline, 256 * 1024)
     except error.HTTPError as exc:
         exc.close()
         raise RemoteError(f"HTTP {exc.code}") from None
@@ -104,12 +108,12 @@ def for_model(image, mime, roi):
         return "image/jpeg", out.getvalue()
 
 
-def image_completion(cfg, mime, data, prompt):
+def image_completion(cfg, mime, data, prompt, timeout=60):
     body = {"model": cfg["model"], "messages": [{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": f"data:{mime};base64," + base64.b64encode(data).decode()}},
         {"type": "text", "text": prompt}]}], "max_tokens": 2048,
         "response_format": {"type": "json_object"}}
-    result = post_json(cfg["model_base"].rstrip("/") + "/chat/completions", cfg["model_key"], body, 60, True)
+    result = post_json(cfg["model_base"].rstrip("/") + "/chat/completions", cfg["model_key"], body, timeout, True)
     try:
         choice = result["choices"][0]
         if choice.get("finish_reason", "stop") != "stop":
@@ -123,7 +127,7 @@ def image_completion(cfg, mime, data, prompt):
         raise RemoteError("模型响应缺少审核内容") from None
 
 
-def review(mode, cfg, task, mime, image):
+def review(mode, cfg, task, mime, image, timeout=60):
     local_model = local_review_model(mode, task["project_id"], task["alarm_type"])
     if local_model == "scope-rule":
         return "uncertain", "一期尚未约定该类型的区域或组合判定规则，保留原报警。", "scope-rule"
@@ -141,6 +145,6 @@ def review(mode, cfg, task, mime, image):
         "仅输出 JSON 对象，字段 relevant_person_visible、is_site_image、saw_target_violation 和 can_rule_out_every_target_violation 为布尔值，"
         "reason 为具体简短的中文可见证据。不推测身份，不编造细节。"
     )
-    content, actual = image_completion(cfg, mime, data, prompt)
+    content, actual = image_completion(cfg, mime, data, prompt, timeout=timeout)
     verdict, reason = interpret(content)
     return verdict, reason, actual
