@@ -1,3 +1,20 @@
+> **公开审阅快照**：此仓库用于审阅截至 2026-11-18 的程序代码。程序源代码来自本机项目；历史说明中的实际网络地址和任务号已隐藏。本仓库不包含真实图片、数据库、日志、配置密钥、接口令牌或证书。运行数据应保存在本地，不要提交到仓库。
+>
+> 仓库不含任何图片文件。安装依赖后运行 `.venv/bin/python scripts/generate_review_fixture.py`，可在本机生成代码和测试所需的合成图片。以下说明中的 PDF、ZIP 也是本机生成物，可按文中命令生成。部署与测试前请先核对外置数据卷要求。
+>
+> 其他 Agent 请先阅读 [审核入口](README-审核入口.md)。原内部审核包脚本引用的历史截图未公开；服务运行不依赖该截图。
+
+新环境在专用数据卷上克隆仓库后，先安装依赖并生成合成图片：
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python scripts/generate_review_fixture.py
+mkdir -p var
+```
+
+以下手册保留原 Mac 的运行说明；路径和已安装依赖需按新环境调整。
+
 # 4S 告警复核试点
 
 ## 今天怎么用
