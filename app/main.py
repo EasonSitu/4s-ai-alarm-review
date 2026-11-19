@@ -6,10 +6,12 @@ import os
 import re
 import sqlite3
 import threading
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import date
 from html import escape
 from string import Template
+from time import monotonic
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 
@@ -71,6 +73,7 @@ class Gate:
     def __init__(self, app, *, public_admin_origin=None):
         self.app = app
         self.public_admin_origin = public_admin_origin
+        self.login_failures = OrderedDict()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -90,14 +93,32 @@ class Gate:
                                    and req.headers.get("x-forwarded-proto") == "https")
                 if (not allowed_origin or "https://" + req.headers.get("host", "") != allowed_origin
                         or not (scope["scheme"] == "https" or local_tls_proxy)
-                        or len(admin_password(cfg)) < 24):
+                        or len(admin_password(cfg)) < 10):
                     rejection = fail(404, "未开放此入口")
             if rejection is None and path.startswith("/admin"):
+                client_ip = req.client.host if req.client else ""
+                if self.public_admin_origin and scope["scheme"] == "http" and client_ip in LOCAL:
+                    # The loopback HTTPS proxy appends the immediate peer as the last hop.
+                    client_ip = req.headers.get("x-forwarded-for", client_ip).rsplit(",", 1)[-1].strip()
+                now = monotonic()
+                failures, until = self.login_failures.get(client_ip, (0, 0))
+                if until <= now:
+                    failures, until = 0, now + 60
                 expected = base64.b64encode(("admin:"+admin_password(cfg)).encode()).decode()
-                if not eq(req.headers.get("authorization",""), "Basic "+expected):
+                if self.public_admin_origin and failures >= 8:
+                    rejection = fail(429, "登录尝试过多，请稍后再试")
+                    rejection.headers["Retry-After"] = str(max(1, int(until - now) + 1))
+                elif not eq(req.headers.get("authorization",""), "Basic "+expected):
+                    if self.public_admin_origin and req.headers.get("authorization"):
+                        self.login_failures[client_ip] = (failures + 1, until)
+                        self.login_failures.move_to_end(client_ip)
+                        if len(self.login_failures) > 4096:
+                            self.login_failures.popitem(last=False)
                     rejection = fail(401, "请使用后台账户 admin 登录")
                     rejection.headers["WWW-Authenticate"] = 'Basic realm="4S admin"'
                     rejection.headers["Cache-Control"] = "no-store"
+                elif self.public_admin_origin:
+                    self.login_failures.pop(client_ip, None)
             if rejection is None and req.method == "POST" and path.startswith("/admin"):
                 origin = req.headers.get("origin", "")
                 if req.headers.get("x-admin-action") != "1" or (origin and origin != allowed_origin):

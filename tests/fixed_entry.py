@@ -65,6 +65,7 @@ def run(state):
         assert (state / "fixed-ip.txt").read_text().strip() == "127.0.0.1"
         manage("stop")
         (state / "public-admin-origin.txt").write_text(base)
+        (state / "admin.secret").write_text("fixture-123")
         manage("fixed-start")
         assert call("/healthz") == (200, {"status": "ok"})
         status, repeat = call("/api/v1/tasks", payload, settings["live_token"])
@@ -88,6 +89,10 @@ def run(state):
             except error.HTTPError as exc:
                 code = exc.code
             assert code == expected
+        for _ in range(8):
+            assert call("/admin", token="wrong")[0] == 401
+        assert call("/admin", token="wrong")[0] == 429
+        assert call("/healthz") == (200, {"status":"ok"})
         manage("stop")
         manage("rotate-token", "live")
         old_token = settings["live_token"]
