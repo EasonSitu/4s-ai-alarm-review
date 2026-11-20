@@ -47,7 +47,10 @@ def read_json_response(res, deadline, limit):
 
 def post_json(url, token, body, timeout, expect_json=False):
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-    req = request.Request(url, data=data, headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = request.Request(url, data=data, headers=headers)
     handlers = [NoRedirect(), request.HTTPSHandler(context=ssl.create_default_context(cafile=certifi.where()))]
     if urlsplit(url).hostname in ("localhost", "127.0.0.1", "::1"):
         handlers.append(request.ProxyHandler({}))

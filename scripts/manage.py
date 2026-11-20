@@ -167,7 +167,8 @@ def main():
                     parser.error("请先配置该环境的回调")
                 with db(args.value) as c:
                     reset = c.execute("""UPDATE tasks SET callback_status='pending',callback_attempts=0,callback_due=0,
-                                        callback_error=NULL WHERE historical_test=0 AND callback_status='failed'""").rowcount
+                                        callback_error=NULL WHERE historical_test=0 AND project_id=COALESCE(?,project_id)
+                                        AND callback_status='failed'""",(cfg.get("callback_test_project"),)).rowcount
                 print("重新排队的回调", reset)
                 return
             if args.action.startswith("fixed-"):

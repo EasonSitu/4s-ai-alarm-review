@@ -65,7 +65,7 @@ class Peer(BaseHTTPRequestHandler):
                 "reason":"本地接口替身的测试证据。"})
             return self.reply(200,{"model":"test-provider-only", "choices":[{"message":{"content":content}}]})
         assert self.path == "/callback"
-        assert self.headers.get("Authorization")=="Bearer qa-callback"
+        assert self.headers.get("Authorization")==getattr(peer, "callback_auth", "Bearer qa-callback")
         peer.events.append(body)
         if peer.block_delivery:
             peer.delivery_enter.set()
@@ -282,6 +282,21 @@ class Pilot:
         sent=[e for e in p.events if e["task_id"]==task]
         assert len(sent)==2 and sent[0]==sent[1]
         print("PASS interrupted HTTP callback recovery and duplicate-safe replay",flush=True)
+
+        self.down()
+        self.cfg.update(callback_test_project="callback-only", callback_token="")
+        p.callback_auth=None
+        self.up()
+        outside=self.submit("outside-callback-scope","danger_zone")
+        self.wait(outside,"callback_status","unconfigured")
+        code,inside=self.api("/api/v1/tasks",dict(self.payload("inside","danger_zone"),project_id="callback-only"))
+        assert code==202
+        self.wait(inside["task_id"],"callback_status","delivered")
+        self.down();self.up()
+        assert self.api("/admin/api/live/tasks/"+outside+"/resend",{},**{"X-Admin-Action":"1"})[0]==409
+        assert self.api("/api/v1/tasks/"+outside)[1]["callback_status"]=="unconfigured"
+        assert all(e["task_id"]!=outside for e in p.events)
+        print("PASS scoped no-auth callback, restart isolation and resend guard",flush=True)
 
     def attempt(self,task,col,state,count,attempt):
         t=self.api("/api/v1/tasks/"+task)[1]

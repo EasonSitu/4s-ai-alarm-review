@@ -507,7 +507,8 @@ def resend(mode: Lane, task_id: str):
     with store.db(mode) as c:
         result = c.execute("""UPDATE tasks SET callback_status='pending',callback_attempts=0,callback_due=0,
                            callback_error=NULL WHERE task_id=? AND historical_test=0
-                           AND callback_status IN ('failed','unconfigured')""",(task_id,))
+                           AND project_id=COALESCE(?,project_id) AND callback_status IN ('failed','unconfigured')""",
+                           (task_id,cfg.get("callback_test_project")))
         if not result.rowcount:
             raise HTTPException(409, "仅可重发失败或未配置的回调")
     return {"queued":True}

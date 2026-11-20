@@ -115,11 +115,11 @@ def init(mode, cfg):
             c.execute("DROP TABLE old_model_calls")
         c.execute("UPDATE review_history SET status='interrupted',finished_at=? WHERE status='processing'", (now(),))
         c.execute("UPDATE model_call_history SET status='interrupted',finished_at=? WHERE status='processing'", (now(),))
-        callback = "pending" if callback_ready(cfg, mode) else "unconfigured"
-        interrupted = c.execute("""SELECT task_id FROM tasks WHERE historical_test=0 AND status='processing'
+        interrupted = c.execute("""SELECT task_id,project_id FROM tasks WHERE historical_test=0 AND status='processing'
                                    AND review_attempts>=?""", (len(REVIEW_DELAYS)+1,)).fetchall()
         for row in interrupted:
             task_id = row["task_id"]
+            callback = "pending" if callback_ready(cfg, mode, row["project_id"]) else "unconfigured"
             c.execute("""UPDATE task_frames SET status='failed',error=COALESCE(error,'最后一次审核中断')
                          WHERE task_id=? AND status!='completed'""", (task_id,))
             status, verdict, reason, error, model = aggregate(frame_results(c, task_id))
@@ -136,14 +136,21 @@ def init(mode, cfg):
         else:
             c.execute("""UPDATE tasks SET status='awaiting_model' WHERE status IN ('queued','retrying')
                          AND alarm_type IN ('no_helmet','no_vest') AND historical_test=0""")
-        fingerprint = hashlib.sha256(json.dumps([cfg["callback_url"], cfg["callback_token"]]).encode()).hexdigest()
+        scope = cfg.get("callback_test_project")
+        route = [cfg["callback_url"], cfg["callback_token"]]
+        if scope:
+            route.append(scope)
+            c.execute("""UPDATE tasks SET callback_status='unconfigured' WHERE historical_test=0
+                         AND project_id<>? AND callback_status IN ('pending','retrying')""", (scope,))
+        fingerprint = hashlib.sha256(json.dumps(route).encode()).hexdigest()
         previous = c.execute("SELECT fingerprint FROM callback_config WHERE id=1").fetchone()
         if callback_ready(cfg, mode) and (previous is None or previous[0] != fingerprint):
             c.execute("""UPDATE tasks SET callback_status='pending',callback_attempts=0,callback_due=0,
-                         callback_error=NULL WHERE historical_test=0 AND callback_status IN ('failed','retrying','pending','unconfigured')""")
+                         callback_error=NULL WHERE historical_test=0 AND project_id=COALESCE(?,project_id)
+                         AND callback_status IN ('failed','retrying','pending','unconfigured')""",(scope,))
         c.execute("INSERT OR REPLACE INTO callback_config VALUES(1,?)", (fingerprint,))
         if callback_ready(cfg, mode):
-            c.execute("UPDATE tasks SET callback_status='pending' WHERE historical_test=0 AND callback_status='unconfigured'")
+            c.execute("UPDATE tasks SET callback_status='pending' WHERE historical_test=0 AND project_id=COALESCE(?,project_id) AND callback_status='unconfigured'", (scope,))
         else:
             c.execute("UPDATE tasks SET callback_status='unconfigured' WHERE historical_test=0 AND callback_status IN ('retrying','pending')")
 

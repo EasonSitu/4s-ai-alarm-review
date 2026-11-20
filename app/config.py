@@ -96,6 +96,9 @@ def validate_config(saved):
                 raise ValueError(f"{key} 请填 HTTPS 地址（本机可用 HTTP）")
     if not isinstance(config["live_token"], str) or len(config["live_token"]) < 24:
         raise ValueError("接口令牌太短")
+    scope = config.get("callback_test_project")
+    if scope is not None and (not isinstance(scope, str) or not scope.strip() or scope != scope.strip() or len(scope) > 100):
+        raise ValueError("请填写有效的回调测试项目编号")
     return config
 
 
@@ -121,5 +124,7 @@ def admin_password(config):
     return config["admin_password"]
 
 
-def callback_ready(config, mode):
-    return bool(config["callback_url"] and config["callback_token"])
+def callback_ready(config, mode, project_id=None):
+    scope = config.get("callback_test_project")
+    return bool(config["callback_url"] and (config["callback_token"] or scope)
+                and (scope is None or project_id is None or project_id == scope))

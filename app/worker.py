@@ -15,10 +15,13 @@ def claim(mode, delivery, cfg):
     column, due, attempts = ("callback_status", "callback_due", "callback_attempts") if delivery else ("status", "review_due", "review_attempts")
     states = ("pending", "retrying") if delivery else ("queued", "retrying")
     active = "sending" if delivery else "processing"
+    if delivery and not callback_ready(cfg, mode):
+        return None
+    scope = cfg.get("callback_test_project") if delivery else None
     with db(mode) as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute(f"SELECT task_id FROM tasks WHERE historical_test=0 AND {column} IN (?,?) AND {due}<=? ORDER BY {due}, received_at LIMIT 1",
-                        (*states, time.time())).fetchone()
+        row = c.execute(f"SELECT task_id FROM tasks WHERE historical_test=0 AND {column} IN (?,?) AND {due}<=? AND project_id=COALESCE(?,project_id) ORDER BY {due}, received_at LIMIT 1",
+                        (*states, time.time(), scope)).fetchone()
         if row is None:
             return None
         extra = "" if delivery else ", started_at=COALESCE(started_at, ?)"
@@ -109,7 +112,7 @@ def run_review(mode, cfg, t, delays=REVIEW_DELAYS):
         status, verdict, reason, error, model = aggregate(frames)
     elapsed = round((time.monotonic()-start)*1000)
     finished = status != "retrying"
-    callback = "pending" if callback_ready(cfg, mode) else "unconfigured"
+    callback = "pending" if callback_ready(cfg, mode, t["project_id"]) else "unconfigured"
     due = 0 if finished else time.time() + delays[attempt-1]
     with db(mode) as c:
         c.execute("""UPDATE tasks SET status=?,verdict=?,reason=?,model=?,error=?,elapsed_ms=?,finished_at=?,
