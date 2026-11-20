@@ -70,7 +70,7 @@ class Peer(BaseHTTPRequestHandler):
         if peer.block_delivery:
             peer.delivery_enter.set()
             peer.delivery_release.wait(10)
-        self.reply(peer.callback_code,{})
+        self.reply(peer.callback_code,getattr(peer,"callback_reply",{}))
 
     def reply(self, code, data):
         try:
@@ -297,6 +297,20 @@ class Pilot:
         assert self.api("/api/v1/tasks/"+outside)[1]["callback_status"]=="unconfigured"
         assert all(e["task_id"]!=outside for e in p.events)
         print("PASS scoped no-auth callback, restart isolation and resend guard",flush=True)
+
+        self.down()
+        self.cfg.pop("callback_test_project")
+        self.cfg.update(callback_noauth_url=self.cfg["callback_url"], callback_ack_url=self.cfg["callback_url"],
+                        callback_auto_backfill=False)
+        p.callback_reply={"success":False,"code":409}
+        self.up()
+        latest=self.submit("default-route","danger_zone")
+        self.wait(latest,"callback_status","retrying")
+        p.callback_reply={"success":True,"code":200}
+        self.advance(latest,"callback_due")
+        self.wait(latest,"callback_status","delivered")
+        assert self.api("/api/v1/tasks/"+outside)[1]["callback_status"]=="unconfigured"
+        print("PASS default callback, explicit receiver acknowledgement, no unrelated backfill",flush=True)
 
     def attempt(self,task,col,state,count,attempt):
         t=self.api("/api/v1/tasks/"+task)[1]

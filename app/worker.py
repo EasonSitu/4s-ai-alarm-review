@@ -130,7 +130,14 @@ def run_callback(mode, cfg, t, delays=CALLBACK_DELAYS):
     try:
         if attempt > len(delays) + 1:
             raise RemoteError("中断后已耗尽回调次数")
-        post_json(target, token, CallbackEvent.model_validate(t).model_dump(), 10)
+        body = CallbackEvent.model_validate(t).model_dump()
+        if cfg.get("callback_ack_url") == target:
+            ack = post_json(target, token, body, 10, expect_json=True)
+            if not isinstance(ack, dict) or ack.get("success") is not True:
+                code = ack.get("code") if isinstance(ack, dict) else None
+                raise RemoteError(f"4S 未确认接收（业务码 {code}）" if type(code) is int else "4S 未确认接收")
+        else:
+            post_json(target, token, body, 10)
         state = "delivered"
     except Exception as exc:
         error = diagnostic(exc)

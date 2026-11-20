@@ -126,5 +126,6 @@ def admin_password(config):
 
 def callback_ready(config, mode, project_id=None):
     scope = config.get("callback_test_project")
-    return bool(config["callback_url"] and (config["callback_token"] or scope)
+    no_auth = config.get("callback_noauth_url") == config["callback_url"]
+    return bool(config["callback_url"] and (config["callback_token"] or scope or no_auth)
                 and (scope is None or project_id is None or project_id == scope))

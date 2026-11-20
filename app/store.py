@@ -144,14 +144,15 @@ def init(mode, cfg):
                          AND project_id<>? AND callback_status IN ('pending','retrying')""", (scope,))
         fingerprint = hashlib.sha256(json.dumps(route).encode()).hexdigest()
         previous = c.execute("SELECT fingerprint FROM callback_config WHERE id=1").fetchone()
-        if callback_ready(cfg, mode) and (previous is None or previous[0] != fingerprint):
+        auto_backfill = callback_ready(cfg, mode) and cfg.get("callback_auto_backfill", True)
+        if auto_backfill and (previous is None or previous[0] != fingerprint):
             c.execute("""UPDATE tasks SET callback_status='pending',callback_attempts=0,callback_due=0,
                          callback_error=NULL WHERE historical_test=0 AND project_id=COALESCE(?,project_id)
                          AND callback_status IN ('failed','retrying','pending','unconfigured')""",(scope,))
         c.execute("INSERT OR REPLACE INTO callback_config VALUES(1,?)", (fingerprint,))
-        if callback_ready(cfg, mode):
+        if auto_backfill:
             c.execute("UPDATE tasks SET callback_status='pending' WHERE historical_test=0 AND project_id=COALESCE(?,project_id) AND callback_status='unconfigured'", (scope,))
-        else:
+        elif not callback_ready(cfg, mode):
             c.execute("UPDATE tasks SET callback_status='unconfigured' WHERE historical_test=0 AND callback_status IN ('retrying','pending')")
 
 
